@@ -1,0 +1,14 @@
+[
+ {
+  "id": "foreman",
+  "name": "Foreman",
+  "pin": "2468",
+  "role": "foreman"
+ },
+ {
+  "id": "viewer",
+  "name": "Viewer",
+  "pin": "1357",
+  "role": "viewer"
+ }
+]
