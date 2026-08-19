@@ -1,0 +1,17 @@
+{
+  "name": "Tervasaari PM5 — изоляция",
+  "short_name": "TESA PM5",
+  "description": "Управление и отчётность о готовности изоляции трубопроводов",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#e9e9ec",
+  "theme_color": "#131316",
+  "lang": "ru",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
