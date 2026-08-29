@@ -164,6 +164,28 @@
       daysOfBudget = cnt;
     }
 
+    // прогноз финиша по темпу готовности
+    const progress0 = o.progress == null ? null : +o.progress;
+    let hoursPerPct = null, hoursToFinish = null, totalNeeded = null, budgetAtFinish = null;
+    let finishDate = null, lateDays = null, dailyRate = null;
+    if (progress0 != null && progress0 > 0 && spent > 0) {
+      hoursPerPct = spent / progress0;
+      hoursToFinish = hoursPerPct * Math.max(0, 100 - progress0);
+      totalNeeded = spent + hoursToFinish;
+      budgetAtFinish = plan.budget - totalNeeded;
+      const people = crewLast > 0 ? crewLast : (pace > 0 ? pace / 10 : 0);
+      dailyRate = people;
+      if (people > 0) {
+        let need = hoursToFinish, d = now, guard = 0;
+        while (need > 0 && guard++ < 900) {
+          const ph = dayPlan(d, plan.schedule);
+          if (ph > 0) { need -= people * ph; if (need <= 0) { finishDate = d; break; } }
+          d = addDays(d, 1);
+        }
+        if (finishDate) lateDays = Math.round((parse(finishDate) - parse(plan.deadline)) / 86400000);
+      }
+    }
+
     // освоение: готовность в % против потраченных часов в %
     const progress = o.progress == null ? null : +o.progress;
     const efficiency = (progress != null && usedPct > 0) ? progress / usedPct : null;
@@ -171,6 +193,12 @@
     return {
       plan, spent, remaining, budget: plan.budget,
       usedPct: Math.round(usedPct * 10) / 10,
+      remainingPct: Math.round((100 - usedPct) * 10) / 10,
+      hoursPerPct: hoursPerPct == null ? null : Math.round(hoursPerPct * 10) / 10,
+      hoursToFinish: hoursToFinish == null ? null : Math.round(hoursToFinish),
+      totalNeeded: totalNeeded == null ? null : Math.round(totalNeeded),
+      budgetAtFinish: budgetAtFinish == null ? null : Math.round(budgetAtFinish),
+      finishDate, lateDays, dailyCrew: dailyRate == null ? null : Math.round(dailyRate * 10) / 10,
       today: now, overdue,
       daysLeft, workdaysLeft: workdays, hoursPerPersonLeft: Math.round(perPerson * 10) / 10,
       crewAffordable: Math.round(crewAffordable * 10) / 10,

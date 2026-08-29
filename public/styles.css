@@ -372,3 +372,13 @@ nav.bot a.on{color:var(--acc)}
 .lgd::before{content:'';width:16px;height:3px;border-radius:2px;background:var(--ink3)}
 .lgd.f::before{background:var(--acc);height:4px}
 .lgd.c::before{background:var(--rel)}
+
+/* табель: правка часов прямо в таблице */
+.tbl td.hcell.ed{cursor:pointer}
+.tbl td.hcell.ed:hover{background:var(--btn);border-radius:6px}
+.tbl td.hcell.flash{animation:hflash 1.3s ease-out}
+@keyframes hflash{0%{background:#ffe58a}100%{background:transparent}}
+.cellin{width:56px;padding:2px 4px;border:1px solid var(--acc);border-radius:6px;
+  background:var(--card);color:var(--ink);font-size:15px;text-align:right}
+.warnmark{color:var(--warn);font-weight:700}
+@media print{.tbl td.hcell.ed{cursor:auto}}

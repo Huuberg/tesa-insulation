@@ -4,6 +4,7 @@
 
 const $ = (s, r) => (r || document).querySelector(s);
 const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstElementChild; };
+const cssq = (s) => String(s == null ? '' : s).replace(/["\\]/g, '\\$&');
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const loc = () => (window.I18N ? I18N.locale : 'ru-RU');
 const n1 = (x) => (Math.round((+x || 0) * 10) / 10).toLocaleString(loc());
@@ -1035,6 +1036,9 @@ function curveSVG(cv, plan) {
   </svg>`;
 }
 
+/* какую клетку табеля подсветить после перерисовки */
+let HRS_FOCUS = null;
+
 async function viewHours() {
   chrome(T('hrs_title'), '', false);
   const app = $('#app');
@@ -1060,9 +1064,10 @@ async function viewHours() {
 
   const rowsHtml = crew.map((who) => {
     const tot = s.byPerson[who] || 0;
-    return `<tr><td>${esc(who)}</td>${cols.map((d) => {
+    const extra = !H.crew.includes(who);
+    return `<tr><td>${esc(who)}${extra ? ` <span class="warnmark" title="${T('hrs_extra')}">•</span>` : ''}</td>${cols.map((d) => {
       const v = (H.hours[d] || {})[who] || 0;
-      return `<td class="mono">${v ? n1(v) : '<span class="muted">·</span>'}</td>`;
+      return `<td class="mono hcell${canEdit ? ' ed' : ''}" data-d="${d}" data-who="${esc(who)}">${v ? n1(v) : '<span class="muted">·</span>'}</td>`;
     }).join('')}<td class="mono"><b>${tot ? n1(tot) : '—'}</b></td></tr>`;
   }).join('');
 
@@ -1180,11 +1185,12 @@ async function viewHours() {
         <span class="row noprint" style="gap:6px">
           <button class="btn sm" id="hpdf">${T('hrs_print')}</button>
           <button class="btn sm" id="hcsv">${T('hrs_csv')}</button></span></div>
-      <div class="scrollx"><table class="tbl">
+      <div class="scrollx" id="htbl"><table class="tbl">
         <thead><tr><th>${T('hrs_person')}</th>${cols.map((d) => `<th>${dLabel(d)}<br><span style="font-weight:400">${dWeek(d)}</span></th>`).join('')}<th>${T('hrs_total')}</th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="${cols.length + 2}">${T('hrs_no_rows')}</td></tr>`}</tbody>
         <tfoot><tr><td>${T('hrs_total')}</td>${cols.map((d) => `<td class="mono"><b>${s.byDay[d] ? n1(s.byDay[d]) : '·'}</b></td>`).join('')}<td class="mono"><b>${n1(s.spent)}</b></td></tr></tfoot>
       </table></div>
+      ${canEdit ? `<div class="pad small muted noprint" style="padding-top:0">${T('hrs_tap')}</div>` : ''}
     </div>
 
     ${canEdit ? `<div class="card pad mb noprint">
@@ -1268,6 +1274,53 @@ async function viewHours() {
         toast(T('hrs_plan_saved'));
         viewHours();
       } catch (e) { toast(e.message, 3000); btn.disabled = false; }
+    });
+  }
+
+  /* ---- правка часов прямо в таблице ---- */
+  const box = $('#htbl');
+  const scrollTo = (d) => {
+    const c = box && box.querySelector(`.hcell[data-d="${d}"]`);
+    if (c && box) box.scrollLeft = Math.max(0, c.offsetLeft - box.clientWidth + c.offsetWidth + 12);
+  };
+  if (HRS_FOCUS) {
+    const f = HRS_FOCUS; HRS_FOCUS = null;
+    scrollTo(f.d);
+    const c = box && box.querySelector(`.hcell[data-d="${f.d}"][data-who="${cssq(f.who)}"]`);
+    if (c) { c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 1400); }
+  } else scrollTo(cols[cols.length - 1]);
+
+  if (canEdit && box) {
+    box.addEventListener('click', (e) => {
+      const td = e.target.closest ? e.target.closest('td.hcell.ed') : null;
+      if (!td || td.querySelector('input')) return;
+      const d = td.dataset.d, who = td.dataset.who;
+      const cur = (H.hours[d] || {})[who] || '';
+      const prev = td.innerHTML;
+      td.innerHTML = `<input class="cellin mono" type="number" inputmode="decimal" step="0.5" min="0" max="24" value="${cur}">`;
+      const inp = td.querySelector('input');
+      inp.focus(); inp.select();
+      let done = false;
+      const cancel = () => { if (done) return; done = true; td.innerHTML = prev; };
+      const commit = async () => {
+        if (done) return; done = true;
+        const v = Math.round((+inp.value || 0) * 10) / 10;
+        if (v === (+cur || 0)) { td.innerHTML = prev; return; }
+        td.innerHTML = '…';
+        const day = Object.assign({}, H.hours[d] || {});
+        if (v > 0) day[who] = Math.min(24, v); else delete day[who];
+        try {
+          await api('hours/day', { method: 'PUT', body: { date: d, entries: day, by: LS.by } });
+          toast(T('hrs_cell_saved', { w: who, d: dLabel(d), n: n1(v) }));
+          HRS_FOCUS = { d, who };
+          viewHours();
+        } catch (err) { toast(err.message, 3000); td.innerHTML = prev; }
+      };
+      inp.addEventListener('blur', commit);
+      inp.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); }
+        if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+      });
     });
   }
 
