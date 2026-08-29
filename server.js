@@ -8,6 +8,7 @@ const os = require('os');
 const M = require('./model');
 const S = require('./store');
 const QR = require('./qr');
+const H = require('./hours');
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -35,6 +36,8 @@ function lineSummary(l) {
     elbows: l.elbows, ties: l.ties, cones: l.cones, cases: l.cases,
     partial: l.partial, al: l.al, connect: l.connect,
     percent: pct, stages: st,
+    released: !!l.release_date, release_note: l.release_note || null,
+    norm_h: M.lineHours(l), earned_h: M.lineEarnedHours(l, c),
     branch_count: (l.branches || []).length,
     drawing: l.drawing || null, drawing_rev: l.drawing_rev || '',
     updated: meta.updated || null, updated_by: meta.updated_by || null,
@@ -43,6 +46,84 @@ function lineSummary(l) {
 }
 
 function allSummaries() { return S.seed.lines.map(lineSummary); }
+
+/** Готовность проекта по нормо-часам — её и сравниваем с потраченными часами. */
+function projectPercentHours() {
+  let n = 0, e = 0;
+  for (const l of S.seed.lines) {
+    const c = checksOf(l);
+    n += M.lineHours(l);
+    e += M.lineEarnedHours(l, c);
+  }
+  return n ? Math.round((e / n) * 1000) / 10 : 0;
+}
+
+/** Кривая готовности: план (равномерно по графику), факт (по журналу), прогноз. */
+function buildCurve(plan, summary) {
+  const totalH = S.seed.lines.reduce((a, l) => a + M.lineHours(l), 0) || 1;
+  const wOf = (id) => {
+    const l = S.linesById.get(id);
+    return l ? M.lineHours(l) / totalH : 0;
+  };
+
+  // план: накопленные плановые часы графика от старта к финишу
+  const days = H.range(plan.start, plan.deadline);
+  let cum = 0;
+  const dayPlanH = days.map((d) => H.dayPlan(d, plan.schedule));
+  const sumPlan = dayPlanH.reduce((a, x) => a + x, 0) || 1;
+  const planLine = days.map((d, i) => {
+    cum += dayPlanH[i];
+    return { d, v: Math.round((cum / sumPlan) * 1000) / 10 };
+  });
+
+  // факт: по журналу изменений линий
+  const byDay = {};
+  for (const h of S.history) {
+    if (h.what && h.what !== 'line') continue;
+    if (!h.ts || h.after == null || h.before == null) continue;
+    const d = String(h.ts).slice(0, 10);
+    byDay[d] = (byDay[d] || 0) + (h.after - h.before) * wOf(h.line);
+  }
+  const today = H.today();
+  let acc = 0;
+  const factLine = [];
+  for (const d of H.range(plan.start, today > plan.deadline ? today : plan.deadline)) {
+    if (d > today) break;
+    acc += byDay[d] || 0;
+    factLine.push({ d, v: Math.round(acc * 10) / 10 });
+  }
+  // если журнал пуст (или обрезан), последнюю точку тянем к фактической готовности
+  const real = summary && summary.progress != null ? summary.progress : null;
+  if (factLine.length && real != null && Math.abs(factLine[factLine.length - 1].v - real) > 0.05) {
+    factLine[factLine.length - 1] = { d: factLine[factLine.length - 1].d, v: real };
+  }
+
+  // прогноз: от сегодня к 100% текущим темпом (по дате из сводки)
+  let fc = [];
+  const from = factLine.length ? factLine[factLine.length - 1] : { d: today, v: 0 };
+  const fin = summary && summary.finishDate;
+  if (fin && from.v < 100) {
+    const fd = H.range(from.d, fin);
+    const step = fd.length > 1 ? (100 - from.v) / (fd.length - 1) : 0;
+    fc = fd.map((d, i) => ({ d, v: Math.round((from.v + step * i) * 10) / 10 }));
+  }
+  return { plan: planLine, fact: factLine, forecast: fc, today, deadline: plan.deadline, start: plan.start };
+}
+
+/** Табель: план, бригада, часы и сводка. */
+function buildHours() {
+  const plan = H.normPlan(S.state.plan);
+  const crew = H.normCrew(S.state.crew);
+  const hours = H.normHours(S.state.hours);
+  const summary = H.summary({ plan, crew, hours, progress: projectPercentHours() });
+  return {
+    plan, crew, hours,
+    summary,
+    curve: buildCurve(plan, summary),
+    updated: S.state.hoursUpdated || null,
+    updated_by: S.state.hoursBy || null,
+  };
+}
 
 function buildReport() {
   const rows = allSummaries();
@@ -76,7 +157,14 @@ function buildReport() {
       area_m2: r1(tot.area_m2),
       percent_m: tot.length_m ? r1(tot.percent_m / tot.length_m) : 0,
       percent_a: tot.area_m2 ? r1(tot.percent_a / tot.area_m2) : 0,
-      released: rows.filter((r) => r.stages.release >= 100).length,
+      norm_h: r1(rows.reduce((a, r) => a + (r.norm_h || 0), 0)),
+      earned_h: r1(rows.reduce((a, r) => a + (r.earned_h || 0), 0)),
+      percent_h: (() => {
+        const n = rows.reduce((a, r) => a + (r.norm_h || 0), 0);
+        const e = rows.reduce((a, r) => a + (r.earned_h || 0), 0);
+        return n ? r1((e / n) * 100) : 0;
+      })(),
+      released: rows.filter((r) => (S.linesById.get(r.id) || {}).release_date).length,
       insulated_100: rows.filter((r) => r.stages.insulation >= 100).length,
       cladded_100: rows.filter((r) => r.stages.cladding >= 100).length,
       accepted_100: rows.filter((r) => r.stages.inspection >= 100).length,
@@ -374,6 +462,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/users' && req.method === 'GET')
       return json(res, 200, S.users.map((x) => ({ name: x.name, role: x.role })));
 
+    // публичная подпись внизу страниц (нужна и на экране входа)
+    if (p === '/api/brand' && req.method === 'GET')
+      return json(res, 200, { hu_url: process.env.TESA_HU_URL || 'https://www.hugouberger.com' });
+
     // длины паролей (не сами пароли) — чтобы клавиатура понимала, когда отправлять
     if (p === '/api/pinlens' && req.method === 'GET')
       return json(res, 200, [...new Set(S.users.map((x) => String(x.pin).length))].sort((a, b) => a - b));
@@ -395,7 +487,7 @@ const server = http.createServer(async (req, res) => {
     /* --- защищённые --- */
     const sess = S.auth(tokenOf(req));
     if (!sess) return json(res, 401, { error: 'Требуется вход' });
-    const canEdit = sess.role === 'admin' || sess.role === 'foreman';
+    const canEdit = sess.role === 'admin' || sess.role === 'manager' || sess.role === 'foreman';
 
     if (p === '/api/me') return json(res, 200, { name: sess.name, role: sess.role });
 
@@ -409,8 +501,9 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/config')
       return json(res, 200, {
-        stages: M.STAGES, levels: M.LEVELS,
-        insp: M.INSP_LEVELS, meta: S.seed.meta,
+        stages: M.STAGES, insp: M.INSP_LEVELS, meta: S.seed.meta,
+        model: M.MODEL_VERSION, elbow_eq: M.ELBOW_EQ, box_hours: M.BOX_HOURS,
+        hu_url: process.env.TESA_HU_URL || 'https://www.hugouberger.com',
       });
 
     if (p === '/api/drawings' && req.method === 'GET')
@@ -432,12 +525,18 @@ const server = http.createServer(async (req, res) => {
         branches: (l.branches || []).map((b) => ({
           ...b,
           weight: Math.round(w[b.id] * 1000) / 10,
-          percent: Math.round(M.branchPercent(c, b.id) * 10) / 10,
+          percent: Math.round(M.branchPercent(c, b.id, l) * 10) / 10,
+          hours: M.branchHours(b),
+          box_eq_m: Math.round(M.boxEqM(b) * 100) / 100,
+          units: Math.round(M.unitsOf(b, false) * 100) / 100,
           stages: Object.fromEntries(M.STAGES.map((s) =>
-            [s.key, M.branchStagePercent(c, b.id, s.key)])),
+            [s.key, M.branchStagePercent(c, b.id, s.key, l)])),
         })),
         oper_temp: l.oper_temp, design_temp: l.design_temp,
         flanges: l.flanges, valves_kot: l.valves_kot, valves_reg: l.valves_reg,
+        boxes: l.boxes || [],
+        release_date: l.release_date || null, release_note: l.release_note || null,
+        release_pct: l.release_pct == null ? null : l.release_pct,
         checks: c,
       });
     }
@@ -462,19 +561,75 @@ const server = http.createServer(async (req, res) => {
       };
       await S.saveState();
       S.addHistory({
-        ts: new Date().toISOString(), user: by, line: id,
+        ts: new Date().toISOString(), user: by, what: 'line', line: id, short: l.short,
         before: Math.round(M.linePercent(l, before) * 10) / 10,
         after: Math.round(M.linePercent(l, checks) * 10) / 10,
       });
       return json(res, 200, lineSummary(l));
     }
 
+    // табель и анализ часов — только для Foreman
+    if (p === '/api/hours' && req.method === 'GET') {
+      if (!canEdit) return json(res, 403, { error: 'Табель доступен только Manager' });
+      return json(res, 200, buildHours());
+    }
+
+    // запись часов за один день: { date, entries: { 'W.1': 10, ... } }
+    if (p === '/api/hours/day' && req.method === 'PUT') {
+      if (!canEdit) return json(res, 403, { error: 'Нет прав на изменение' });
+      const b = await body(req);
+      const date = String(b.date || '');
+      if (!H.parse(date)) return json(res, 400, { error: 'Неверная дата' });
+      const day = {};
+      const src = b.entries && typeof b.entries === 'object' ? b.entries : {};
+      for (const who of Object.keys(src)) {
+        const v = Math.round((+src[who] || 0) * 10) / 10;
+        if (v > 0) day[String(who).slice(0, 24)] = Math.min(24, v);
+      }
+      const hours = H.normHours(S.state.hours);
+      const before = H.daySum(hours[date]);
+      if (Object.keys(day).length) hours[date] = day; else delete hours[date];
+      S.state.hours = hours;
+      S.state.hoursUpdated = new Date().toISOString();
+      S.state.hoursBy = sess.name + (b.by ? ' · ' + String(b.by).slice(0, 40) : '');
+      await S.saveState();
+      S.addHistory({
+        ts: new Date().toISOString(), user: S.state.hoursBy, what: 'hours',
+        line: 'ЧАСЫ ' + date, short: date,
+        before: Math.round(before * 10) / 10, after: Math.round(H.daySum(day) * 10) / 10,
+      });
+      return json(res, 200, buildHours());
+    }
+
+    // план и состав бригады: { budget, deadline, start, schedule, crew }
+    if (p === '/api/hours/plan' && req.method === 'PUT') {
+      if (!canEdit) return json(res, 403, { error: 'Нет прав на изменение' });
+      const b = await body(req);
+      S.state.plan = H.normPlan(Object.assign({}, H.normPlan(S.state.plan), {
+        budget: b.budget, deadline: b.deadline, start: b.start, schedule: b.schedule,
+      }));
+      if (Array.isArray(b.crew)) S.state.crew = H.normCrew(b.crew);
+      S.state.hoursUpdated = new Date().toISOString();
+      S.state.hoursBy = sess.name;
+      await S.saveState();
+      S.addHistory({
+        ts: new Date().toISOString(), user: sess.name, what: 'plan',
+        line: 'ПЛАН', short: S.state.plan.deadline,
+        before: null, after: S.state.plan.budget,
+      });
+      return json(res, 200, buildHours());
+    }
+
     if (p === '/api/report' && req.method === 'GET') return json(res, 200, buildReport());
 
     if (p === '/api/history' && req.method === 'GET') {
       const id = query.line;
-      const h = id ? S.history.filter((x) => x.line === id) : S.history;
-      return json(res, 200, h.slice(-200).reverse());
+      let h = id ? S.history.filter((x) => x.line === id) : S.history;
+      if (!canEdit) h = h.filter((x) => !x.what || x.what === 'line');
+      const n = Math.min(500, Math.max(1, Number(query.n) || 200));
+      return json(res, 200, h.slice(-n).reverse().map((x) => Object.assign({}, x, {
+        short: x.short || (S.linesById.get(x.line) || {}).short || x.line,
+      })));
     }
 
     if (p === '/api/export' && req.method === 'GET')

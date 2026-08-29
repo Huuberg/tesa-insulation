@@ -5,7 +5,7 @@ let fail = 0;
 const ok = (c, m) => { console.log((c ? '  OK   ' : '  FAIL ') + m); if (!c) fail++; };
 const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
 
-console.log('\n1. Сверка с регистром v64');
+console.log('\n1. Сверка с регистром v65');
 ok(seed.lines.length === 89, `линий: ${seed.lines.length} (ожидается 89)`);
 const tm = seed.lines.reduce((s, l) => s + l.length_m, 0);
 const ta = seed.lines.reduce((s, l) => s + l.area_m2, 0);
@@ -14,38 +14,58 @@ ok(near(ta, 713.0, 1), `площадь: ${ta.toFixed(1)} м² (регистр 71
 ok(seed.lines.reduce((s, l) => s + l.elbows, 0) === 499, `отводов: ${seed.lines.reduce((s, l) => s + l.elbows, 0)} (регистр 499)`);
 ok(near(seed.lines.reduce((s, l) => s + l.straight_m, 0), 725, 1), `прямых: ${seed.lines.reduce((s, l) => s + l.straight_m, 0).toFixed(1)} м (регистр 725)`);
 
-console.log('\n2. Модель готовности (веса 1/1/40/40/15/3)');
-ok(M.STAGES.reduce((a, s) => a + s.weight, 0) === 100,
-   'сумма весов позиций = ' + M.STAGES.reduce((a, s) => a + s.weight, 0));
-ok(M.STAGES.map((s) => s.key).join(',') === 'release,materials,insulation,cladding,finishing,inspection',
-   'шесть позиций в правильном порядке');
+console.log('\n2. Модель готовности v2 (веса 5/30/40/23/2)');
+ok(M.STAGES.reduce((a, s) => a + s.weight, 0) === 100, 'сумма весов позиций = 100');
+ok(M.STAGES.map((s) => s.key).join(',') === 'materials,insulation,cladding,finishing,inspection',
+   'пять позиций в правильном порядке');
 
-const L = seed.lines.find((x) => x.id === '50157');
+const L = seed.lines.find((x) => x.branches.length > 1 && x.cases > 0) || seed.lines[0];
+const fillAll = (c, fn) => { for (const k of Object.keys(c.branches)) fn(c.branches[k], k); return c; };
+const brOf = (line, id) => line.branches.find((b) => b.id === id);
+
 let c = M.emptyChecks(L);
 ok(M.linePercent(L, c) === 0, 'пустая линия = 0%');
 
-const fillAll = (checks, fn) => { for (const b of L.branches) fn(checks.branches[b.id]); return checks; };
+c = fillAll(M.emptyChecks(L), (t) => { t.materials = 100; });
+ok(near(M.linePercent(L, c), 5, 0.01), `только «Материалы» = ${M.linePercent(L, c).toFixed(2)}% (ожидается 5)`);
 
-c = fillAll(M.emptyChecks(L), (t) => { t.release.done = true; });
-ok(near(M.linePercent(L, c), 1, 0.01), `только Release = ${M.linePercent(L, c).toFixed(2)}% (ожидается 1)`);
+c = fillAll(M.emptyChecks(L), (t) => { t.finishing = 100; });
+ok(near(M.linePercent(L, c), 23, 0.01), `только «Отделка» = ${M.linePercent(L, c).toFixed(2)}% (ожидается 23)`);
 
-c = fillAll(M.emptyChecks(L), (t) => {
-  t.release.done = true; t.inspection.levels = [50, 100];
-  for (const k of M.LEVEL_STAGES) t[k] = [5, 25, 75, 100];
+c = fillAll(M.emptyChecks(L), (t, id) => {
+  const b = brOf(L, id);
+  t.insulation = { m: b.straight_m, el: Array.from({ length: b.elbows }, (_, i) => i) };
+});
+ok(near(M.linePercent(L, c), 30, 0.01), `вся вата = ${M.linePercent(L, c).toFixed(2)}% (ожидается 30)`);
+
+c = fillAll(M.emptyChecks(L), (t, id) => {
+  const b = brOf(L, id);
+  t.cladding = { m: b.straight_m, el: Array.from({ length: b.elbows }, (_, i) => i),
+                 bx: Array.from({ length: b.cases }, (_, i) => 'b' + i) };
+});
+ok(near(M.linePercent(L, c), 40, 0.01), `весь металл с чемоданами = ${M.linePercent(L, c).toFixed(2)}% (ожидается 40)`);
+
+c = fillAll(M.emptyChecks(L), (t) => { t.inspection = { levels: [50] }; });
+ok(near(M.linePercent(L, c), 1, 0.01), `Приёмка 50% = ${M.linePercent(L, c).toFixed(2)}% (ожидается 1)`);
+
+c = fillAll(M.emptyChecks(L), (t, id) => {
+  const b = brOf(L, id);
+  t.materials = 100; t.finishing = 100; t.inspection = { levels: [50, 100] };
+  t.insulation = { m: b.straight_m, el: Array.from({ length: b.elbows }, (_, i) => i) };
+  t.cladding = { m: b.straight_m, el: Array.from({ length: b.elbows }, (_, i) => i),
+                 bx: Array.from({ length: b.cases }, (_, i) => 'b' + i) };
 });
 ok(near(M.linePercent(L, c), 100, 0.01), `всё отмечено = ${M.linePercent(L, c).toFixed(2)}% (ожидается 100)`);
+ok(near(M.lineEarnedHours(L, c), M.lineHours(L), 0.05), 'освоенные нормо-часы = всем часам линии');
 
-c = fillAll(M.emptyChecks(L), (t) => { t.insulation = [5, 25, 75, 100]; });
-ok(near(M.linePercent(L, c), 40, 0.01), `только Insulation = ${M.linePercent(L, c).toFixed(2)}% (ожидается 40)`);
-
-c = fillAll(M.emptyChecks(L), (t) => { t.cladding = [5, 25, 75, 100]; });
-ok(near(M.linePercent(L, c), 40, 0.01), `только Cladding = ${M.linePercent(L, c).toFixed(2)}% (ожидается 40)`);
-
-c = fillAll(M.emptyChecks(L), (t) => { t.finishing = [5, 25, 75, 100]; });
-ok(near(M.linePercent(L, c), 15, 0.01), `только Finishing = ${M.linePercent(L, c).toFixed(2)}% (ожидается 15)`);
-
-c = fillAll(M.emptyChecks(L), (t) => { t.inspection.levels = [50]; });
-ok(near(M.linePercent(L, c), 1.5, 0.01), `Inspection 50% = ${M.linePercent(L, c).toFixed(2)}% (ожидается 1,5)`);
+console.log('\n2b. Трудоёмкость и производительность');
+const totalH = seed.lines.reduce((a, l) => a + M.lineHours(l), 0);
+ok(near(totalH, 1249, 1), `нормо-часов по проекту: ${totalH.toFixed(1)} (бюджет 1249)`);
+ok(M.dnK(25) > M.dnK(150) && M.dnK(150) > M.dnK(250), 'на тонких трубах м² дороже по времени');
+const bx = seed.lines.find((x) => x.branches.some((b) => b.cases > 0));
+const bb = bx.branches.find((b) => b.cases > 0);
+const boxH = M.boxEqM(bb) * (bb.dev / 1000) * M.dnK(bb.dn) * M.HPM_CLAD;
+ok(near(boxH, 1.5, 0.01), `чемодан = ${boxH.toFixed(2)} ч (ожидается 1,5)`);
 
 console.log('\n3. Ветки линий (отдельная форма на каждый типоразмер)');
 const totalBranches = seed.lines.reduce((a, l) => a + l.branches.length, 0);
@@ -67,26 +87,28 @@ ok(wOk, 'доли веток внутри каждой линии дают в с
 const L2 = seed.lines.find((x) => x.branches.length > 1);
 c = M.emptyChecks(L2);
 const b0 = L2.branches[0];
-Object.assign(c.branches[b0.id], { release: { done: true }, inspection: { levels: [50, 100] } });
-for (const k of M.LEVEL_STAGES) c.branches[b0.id][k] = [5, 25, 75, 100];
+const t0 = c.branches[b0.id];
+t0.materials = 100; t0.finishing = 100; t0.inspection = { levels: [50, 100] };
+t0.insulation = { m: b0.straight_m, el: Array.from({ length: b0.elbows }, (_, i) => i) };
+t0.cladding = { m: b0.straight_m, el: Array.from({ length: b0.elbows }, (_, i) => i),
+                bx: Array.from({ length: b0.cases }, (_, i) => 'b' + i) };
 const expect = M.branchWeights(L2)[b0.id] * 100;
 ok(near(M.linePercent(L2, c), expect, 0.01),
    `${L2.short}: ветка ${b0.label} на 100% даёт ${M.linePercent(L2, c).toFixed(1)}% линии (доля ветки ${expect.toFixed(1)}%)`);
-
-console.log('\n3b. Перенос отметок из старого формата (до веток)');
-const legacy = M.sanitize({ release: { done: true }, inspection: { levels: [50] },
-  materials: { pipe: [5, 25, 75] }, insulation: { pipe: [5, 25, 75, 100] },
-  cladding: { pipe: [5], fin: [5, 25, 75] } }, L);
-ok(M.branchStagePercent(legacy, L.branches[0].id, 'insulation') === 100, 'старая Insulation перенесена');
-ok(M.branchStagePercent(legacy, L.branches[0].id, 'finishing') === 75, 'старая подпозиция «отделка» стала позицией Finishing');
 
 console.log('\n4. Данные линий');
 ok(seed.lines.every((l) => l.main && l.main.dev > 0), 'у каждой линии есть развёртка металла');
 ok(seed.lines.every((l) => l.short && l.name), 'у каждой линии есть короткое и полное имя');
 const noConn = seed.lines.filter((l) => !l.connect.length).length;
 console.log(`  инфо  линий без указанных связей: ${noConn}`);
-const kot = seed.lines.filter((l) => l.valves_kot > 0).length;
-console.log(`  инфо  линий с чемоданами из KOTELOT: ${kot}, всего чемоданов: ${seed.lines.reduce((s, l) => s + l.cases, 0)}`);
+const kot = seed.lines.filter((l) => l.cases > 0).length;
+const boxTot = seed.lines.reduce((s, l) => s + l.cases, 0);
+console.log(`  инфо  линий с чемоданами: ${kot}, всего чемоданов: ${boxTot}`);
+ok(seed.lines.every((l) => (l.boxes || []).reduce((s, b) => s + (b.qty || 0), 0) === l.cases),
+   'список чемоданов на линии совпадает с их количеством');
+ok(seed.lines.every((l) => !l.branches.length
+     || l.branches.reduce((s, b) => s + (b.cases || 0), 0) === l.cases),
+   'чемоданы разложены по веткам без потерь');
 
 console.log('\n5. QR-код для подключения телефона');
 try {

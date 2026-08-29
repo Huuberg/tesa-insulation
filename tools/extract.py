@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Извлечение данных по линиям из TESA REGISTER v64 + KOTELOT -> seed JSON"""
-import openpyxl, xlrd, re, json, math, collections, sys, os
+"""Извлечение данных по линиям: TESA REGISTER v65 + ЧЕМОДАНЫ.xlsx -> seed JSON"""
+import openpyxl, re, json, math, collections, sys, os
 
-REG = '/mnt/user-data/uploads/Tervasaari Pr/TESA REGISTER - полный v64.xlsx'
-KOT = '/mnt/user-data/uploads/Tervasaari Pr/Dox/RAUAF04301_01_KOTELOT.xls'
+REG = '/mnt/user-data/uploads/Tervasaari Pr/TESA REGISTER - полный v65.xlsx'
+BOXES = '/mnt/user-data/uploads/Tervasaari Pr/ЧЕМОДАНЫ.xlsx'
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'seed.json')
 DRAWINGS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'public', 'drawings')
 
@@ -19,28 +19,70 @@ if os.path.isdir(DRAWINGS):
             draw[m0.group(1)] = {'file': fn, 'rev': ('R' + rev.group(1)) if rev else ''}
 print('чертежей найдено:', len(draw))
 
-# ---------- 1. чемоданы из KOTELOT (ручная арматура), матчинг по номеру линии 50xxx ----------
-kot = collections.Counter()
-kot_detail = collections.defaultdict(list)
-wb = xlrd.open_workbook(KOT)
-for sh in wb.sheets():
-    if sh.nrows < 2:
+# ---------- 1. чемоданы (съёмные короба на арматуру) из ЧЕМОДАНЫ.xlsx ----------
+# «Общий Чистый» — сводный список: линия, кол-во, диаметр, толщина, номер, примечание
+# «Основные»     — список арматуры Valmet: позиция, тип, изготовитель
+wbb = openpyxl.load_workbook(BOXES, read_only=True, data_only=True)
+
+def _s(v):
+    return '' if v is None else str(v).strip()
+
+def _i(v, d=0):
+    try:
+        return int(round(float(v)))
+    except (TypeError, ValueError):
+        return d
+
+# арматура Valmet со съёмной изоляцией: по линии — позиции
+valves_by_line = collections.defaultdict(list)
+for r in wbb['Основные '].iter_rows(min_row=4, values_only=True):
+    if not r[6] or 'emovable' not in _s(r[17]):
         continue
-    for i in range(sh.nrows):
-        row = [str(c).strip() for c in sh.row_values(i)]
-        line_cell = None
-        for c in row:
-            m = re.match(r'^(50\d{3})-[A-Z]', c)
-            if m:
-                line_cell = m.group(1)
-                break
-        if not line_cell:
+    m = re.match(r'^(50\d{3})', _s(r[6]))
+    if not m:
+        continue
+    valves_by_line[m.group(1)].append({
+        'pos': _s(r[3]), 'size': _s(r[9]), 'conn': _s(r[10]),
+        'valve': _s(r[11]), 'note': _s(r[15]),
+    })
+
+boxes_by_line = collections.defaultdict(list)
+kot = collections.Counter()          # число чемоданов на линию
+for r in wbb['Общий Чистый'].iter_rows(min_row=3, values_only=True):
+    if not r[1]:
+        continue
+    m = re.match(r'^(50\d{3})', _s(r[1]))
+    if not m:
+        continue
+    num = m.group(1)
+    qty = _i(r[4], 0)
+    if qty <= 0:
+        continue
+    box = {
+        'n': _s(r[7]),                # BOX - ###  (номер по проекту)
+        'qty': qty,
+        'dn': _s(r[5]),               # BOX - pipe (диаметр арматуры)
+        'ins': _i(r[6], 0),           # BOX - EV   (толщина изоляции, мм)
+        'info': _s(r[8]),             # тип/примечание
+        'measured': bool(_s(r[9])),
+        'ordered': bool(_s(r[10])),
+        'installed': bool(_s(r[11])),
+    }
+    # подтягиваем позицию арматуры из списка Valmet по совпадению диаметра
+    for v in valves_by_line.get(num, []):
+        if v.get('used'):
             continue
-        pos = row[2] if len(row) > 2 else ''
-        typ = row[7] if len(row) > 7 else ''
-        size = row[8] if len(row) > 8 else ''
-        kot[line_cell] += 1
-        kot_detail[line_cell].append({'pos': pos, 'type': typ, 'size': size, 'sheet': sh.name})
+        if v['size'] and box['dn'] and v['size'].split('/')[0] == box['dn'].split('/')[0]:
+            v['used'] = True
+            box['pos'] = v['pos']
+            box['valve'] = v['valve'] or v['note']
+            box['conn'] = v['conn']
+            break
+    boxes_by_line[num].append(box)
+    kot[num] += qty
+
+print('чемоданов:', sum(kot.values()), 'на линиях:', len(kot))
+wbb.close()
 
 # ---------- 2. регистр ----------
 wb2 = openpyxl.load_workbook(REG, data_only=True)
@@ -48,7 +90,7 @@ ws = wb2['REGISTERFULL']
 
 C = dict(line=0, otemp=1, dtemp=2, part=3, dn=4, heat=5, typ=6, id=7, ins=8, od=9,
          dev=10, qty=11, r=12, deg=13, lmm=14, summ=15, cone=16, al=17, partial=18,
-         err=19, connect=20)
+         err=19, connect=20, release=21, relpct=22)
 
 def f(v, d=0.0):
     try:
@@ -87,7 +129,8 @@ for r in ws.iter_rows(min_row=3, values_only=True):
     name = str(name).strip()
     L = lines.setdefault(name, {
         'name': name, 'rows': [], 'connect': set(), 'al': set(),
-        'otemp': None, 'dtemp': None, 'partial': False})
+        'otemp': None, 'dtemp': None, 'partial': False,
+        'rel_dates': set(), 'rel_notes': set(), 'rel_pct': []})
     part = str(r[C['part']] or '').strip()
     qty = int(f(r[C['qty']], 0) or 0)
     summ = f(r[C['summ']])
@@ -109,6 +152,22 @@ for r in ws.iter_rows(min_row=3, values_only=True):
     p = str(r[C['partial']] or '').strip().lower()
     if p not in ('no', 'нет', ''):
         L['partial'] = True
+    rel = r[C['release']]
+    if rel not in (None, ''):
+        t = str(rel).strip()
+        if t:
+            m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', t)
+            if m:
+                L['rel_dates'].add(m.group(0))
+            else:
+                L['rel_notes'].add(t)
+    rp = r[C['relpct']]
+    if rp not in (None, ''):
+        try:
+            L['rel_pct'].append(float(rp))
+        except (TypeError, ValueError):
+            pass
+
     conn = r[C['connect']]
     if conn:
         for tok in re.split(r'[,;/]+', str(conn)):
@@ -129,7 +188,7 @@ for name, L in lines.items():
     cones = sum(x['qty'] for x in rows if x['part'] in CONE)
     valves_reg = sum(x['qty'] for x in rows if x['part'] in VALVE)
     flanges = sum(x['qty'] for x in rows if x['part'] in FLANGE)
-    cases = max(kot.get(num, 0), valves_reg)
+    cases = kot.get(num, 0)          # съёмные чемоданы по списку ЧЕМОДАНЫ.xlsx
 
     # --- расчётная площадь для весов (не искажает отчётные м²) ---
     def work_area(x):
@@ -242,13 +301,27 @@ for name, L in lines.items():
         blist.append(b)
     blist.sort(key=lambda b: (-b['work'], -b['length_m']))
 
-    # чемоданы из KOTELOT распределяем: сколько нашли в строках, остаток — на главную ветку
+    # чемоданы раскладываем по веткам: по диаметру арматуры, остальное — на главную ветку
     if blist:
-        got = sum(b['valves'] for b in blist)
-        if cases > got:
-            blist[0]['valves'] += cases - got
         for b in blist:
-            b['cases'] = b['valves']
+            b['cases'] = 0
+        for bx in boxes_by_line.get(num, []):
+            want = re.split(r'[/\\]', bx.get('dn') or '')[0].strip()
+            tgt = None
+            if want.isdigit():
+                w = int(want)
+                for b in blist:
+                    if b.get('dn') and int(b['dn']) == w:
+                        tgt = b
+                        break
+                if tgt is None:
+                    for b in blist:
+                        if b.get('pipe_od') and abs(int(b['pipe_od']) - w) <= 6:
+                            tgt = b
+                            break
+            dest = tgt or blist[0]
+            dest['cases'] += bx['qty']
+            bx['branch'] = dest['id']
         # вес ветки не должен быть нулевым, иначе её отметки не влияют на процент
         for b in blist:
             if b['work'] <= 0:
@@ -270,6 +343,9 @@ for name, L in lines.items():
         'oper_temp': L['otemp'],
         'design_temp': L['dtemp'],
         'partial': L['partial'],
+        'release_date': (sorted(L['rel_dates'])[0] if L['rel_dates'] else None),
+        'release_note': (' · '.join(sorted(L['rel_notes'])) if L['rel_notes'] else None),
+        'release_pct': (round(sum(L['rel_pct']) / len(L['rel_pct']), 1) if L['rel_pct'] else None),
         'al': sorted(L['al']),
         'main': main,
         'sizes': sizes,
@@ -282,6 +358,7 @@ for name, L in lines.items():
         'cases': cases,
         'valves_reg': valves_reg,
         'valves_kot': kot.get(num, 0),
+        'boxes': boxes_by_line.get(num, []),
         'flanges': flanges,
         'connect': sorted(L['connect']),
         'branches': blist,
@@ -345,7 +422,7 @@ for l in out:
 
 meta = {
     'project': 'Valmet Tervasaari PM5 — изоляция трубопроводов',
-    'source': 'TESA REGISTER - полный v64.xlsx + RAUAF04301_01_KOTELOT.xls',
+    'source': 'TESA REGISTER - полный v65.xlsx + ЧЕМОДАНЫ.xlsx',
     'lines': len(out),
     'total_length_m': round(sum(l['length_m'] for l in out), 1),
     'total_area_m2': round(sum(l['area_m2'] for l in out), 1),
@@ -359,4 +436,4 @@ os.makedirs(os.path.dirname(OUT), exist_ok=True)
 json.dump({'meta': meta, 'lines': out}, open(OUT, 'w', encoding='utf-8'),
           ensure_ascii=False, indent=1)
 print(json.dumps(meta, ensure_ascii=False, indent=1))
-print('kotelot matched lines:', len([k for k in kot if k in bynum]), 'valves', sum(kot.values()))
+print('чемоданы: линий', len([k for k in kot if k in bynum]), '· всего', sum(kot.values()))

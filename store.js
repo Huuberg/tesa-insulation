@@ -13,6 +13,7 @@ const USE_DRIVE = String(process.env.TESA_STORE || '').toLowerCase() === 'drive'
 
 const F = {
   seed:     path.join(DATA, 'seed.json'),
+  hoursSeed: path.join(__dirname, 'data', 'hours-seed.json'),
   state:    path.join(DATA, 'state.json'),
   users:    path.join(DATA, 'users.json'),
   history:  path.join(DATA, 'history.json'),
@@ -43,19 +44,70 @@ const linesById = new Map(seed.lines.map((l) => [l.id, l]));
 
 /* ---------- состояние ---------- */
 let state = { version: 1, updated: new Date().toISOString(), lines: {} };
+
+/** Переход на модель готовности v2: старые отметки (проценты 5/25/75/100) не переносятся. */
+function resetOldModel(st) {
+  if (!st || typeof st !== 'object') return false;
+  if (st.model === 2) return false;
+  const had = Object.keys(st.lines || {}).length;
+  st.lines = {};
+  st.model = 2;
+  if (had) console.log(`  Модель готовности обновлена до v2 — старые отметки (${had} линий) очищены`);
+  return true;
+}
+
+/** Табель: при первом запуске подставляем начальные часы из hours-seed.json. */
+function seedHours(st) {
+  if (!st || typeof st !== 'object') return false;
+  if (st.hours && Object.keys(st.hours).length) return false;
+  const hs = readJSON(F.hoursSeed, null);
+  if (!hs) return false;
+  st.hours = hs.hours || {};
+  if (!st.plan) st.plan = hs.plan || null;
+  if (!st.crew) st.crew = hs.crew || null;
+  return true;
+}
 let history = [];
 let sessions = {};
 
+/* Доступы: три «менеджера» (основной и два запасных) и наблюдатель.
+   Роль foreman из старых версий считается тем же самым, что manager. */
 let users = readJSON(F.users, null) || [
-  { id: 'foreman', name: 'Foreman', pin: '2468', role: 'foreman' },
-  { id: 'viewer',  name: 'Viewer',  pin: '1357', role: 'viewer'  },
+  { id: 'manager',  name: 'Manager 1', pin: '2468', role: 'manager' },
+  { id: 'manager2', name: 'Manager 2', pin: '2469', role: 'manager' },
+  { id: 'manager3', name: 'Manager 3', pin: '2470', role: 'manager' },
+  { id: 'viewer',   name: 'Viewer',    pin: '1357', role: 'viewer'  },
 ];
+// старые файлы users.json: foreman -> manager
+for (const u of users) if (u.role === 'foreman') u.role = 'manager';
+
 // Пароли из переменных окружения перекрывают файл (так удобно в облаке).
 (() => {
-  const env = { foreman: process.env.TESA_FOREMAN_PIN, viewer: process.env.TESA_VIEWER_PIN };
+  const byId = {
+    manager:  process.env.TESA_MANAGER_PIN  || process.env.TESA_FOREMAN_PIN,
+    manager2: process.env.TESA_MANAGER2_PIN,
+    manager3: process.env.TESA_MANAGER3_PIN,
+    viewer:   process.env.TESA_VIEWER_PIN,
+  };
+  const byName = {
+    manager:  process.env.TESA_MANAGER_NAME,
+    manager2: process.env.TESA_MANAGER2_NAME,
+    manager3: process.env.TESA_MANAGER3_NAME,
+  };
   for (const u of users) {
-    const v = env[u.role];
+    const v = byId[u.id] || (u.role === 'manager' && u.id === 'foreman'
+      ? (process.env.TESA_MANAGER_PIN || process.env.TESA_FOREMAN_PIN) : null);
     if (v && String(v).trim()) u.pin = String(v).trim();
+    const nm = byName[u.id];
+    if (nm && String(nm).trim()) u.name = String(nm).trim().slice(0, 24);
+  }
+  // одинаковые пароли недопустимы — вход определяется паролем
+  const seen = new Set();
+  for (const u of users) {
+    if (seen.has(String(u.pin))) {
+      console.error(`  ВНИМАНИЕ: у «${u.name}» пароль совпадает с другим доступом — вход будет отдан первому в списке`);
+    }
+    seen.add(String(u.pin));
   }
 })();
 
@@ -141,6 +193,8 @@ const ready = (async () => {
     state = readJSON(F.state, state);
     history = readJSON(F.history, []);
     sessions = readJSON(F.sessions, {});
+    const a1 = seedHours(state), a2 = resetOldModel(state);
+    if (a1 || a2) writeFileJSON(F.state, state);
     if (!fs.existsSync(F.state)) writeFileJSON(F.state, state);
     if (!fs.existsSync(F.users)) writeFileJSON(F.users, users);
     return driveState;
@@ -176,6 +230,9 @@ const ready = (async () => {
       dirty.add('state.json'); dirty.add('history.json');
       startRetryLoop();
     }
+    const s1 = seedHours(state), s2 = resetOldModel(state);
+    if (s1) console.log('  Табель: подставлены начальные часы (hours-seed.json)');
+    if (s1 || s2) saveState();
     driveState.ok = true;
     driveState.folderId = drive.folderId;
     console.log(`  Google Drive: подключён, отметок по линиям: ${Object.keys(state.lines || {}).length}`);
@@ -218,6 +275,7 @@ function auth(token) {
   const s = sessions[token];
   if (!s) return null;
   if (Date.now() - s.ts > TTL) { delete sessions[token]; saveSessions(); return null; }
+  if (s.role === 'foreman') s.role = 'manager';   // сессии, выданные старой версией
   return s;
 }
 function logout(token) { delete sessions[token]; saveSessions(); }

@@ -25,6 +25,8 @@ const LS = {
 };
 
 let ME = LS.me;
+/** менеджер (в старых версиях роль называлась foreman) */
+const isMgr = (u) => !!u && (u.role === 'manager' || u.role === 'foreman' || u.role === 'admin');
 let LINES = [];          // сводки всех линий
 let DETAIL = LS.details; // подробности линий (кэш, переживает перезапуск)
 let ONLINE = true;       // доступен ли сервер прямо сейчас
@@ -114,7 +116,7 @@ function queuePut(id, checks, note) {
 /* ---------------- загрузка данных ---------------- */
 async function loadAll(force) {
   try {
-    if (!CFG) CFG = await api('config');
+    if (!CFG) { CFG = await api('config'); applyHU(); }
     LINES = await api('lines');
     LS.cache = { at: Date.now(), cfg: CFG, lines: LINES };
     await flushQueue();
@@ -154,8 +156,8 @@ function bar(p) {
 
 function stageSeg(st) {
   // мини-полоса из 5 сегментов по позициям
-  const cols = { release: 'var(--rel)', materials: '#94a3b8', insulation: 'var(--acc)',
-                 cladding: '#0ea5e9', finishing: '#a855f7', inspection: 'var(--ok)' };
+  const cols = { materials: '#8b93a1', insulation: 'var(--acc)',
+                 cladding: '#0b7fb8', finishing: '#7c3aed', inspection: 'var(--ok)' };
   return '<div class="seg">' + STAGES.map((s) => {
     const p = st[s.key] || 0;
     return `<i style="flex:0 0 ${s.weight}%;background:linear-gradient(90deg,${cols[s.key]} ${p}%,var(--line2) ${p}%)"></i>`;
@@ -192,14 +194,17 @@ function chrome(title, sub, showBack) {
   $('#sub').textContent = sub || 'Tervasaari PM5';
   $('#back').style.visibility = showBack ? 'visible' : 'hidden';
   $('#who').innerHTML = ME
-    ? `<span class="rolechip ${ME.role === 'foreman' ? 'ed' : 'ro'}" id="rolechip">${esc(ME.name)}</span>`
+    ? `<span class="rolechip ${isMgr(ME) ? 'ed' : 'ro'}" id="rolechip">${esc(ME.name)}</span>`
       + (LS.by ? '<br><span class="mono">' + esc(LS.by) + '</span>' : '')
       + (!ONLINE ? `<br><span class="offchip">${T('no_conn_chip')}</span>` : '')
       + (LS.queue.length ? `<br><span style="color:var(--acc)">${T('not_sent_chip', { n: LS.queue.length })}</span>` : '')
     : '';
+  const nh = $('#nav-hours');
+  if (nh) nh.hidden = !(ME && isMgr(ME));
   for (const a of document.querySelectorAll('nav.bot a')) a.classList.remove('on');
   const h = location.hash || '#/';
-  const cur = h.startsWith('#/report') ? '#nav-report' : h.startsWith('#/list') ? '#nav-list' : h === '#/' ? '#nav-home' : null;
+  const cur = h.startsWith('#/report') ? '#nav-report' : h.startsWith('#/hours') ? '#nav-hours'
+    : h.startsWith('#/list') ? '#nav-list' : h === '#/' ? '#nav-home' : null;
   if (cur) $(cur).classList.add('on');
 }
 
@@ -209,8 +214,25 @@ function langBar() {
     `<button data-lang="${l}"${l === I18N.lang ? ' class="on"' : ''}>${I18N.short[l]}</button>`).join('') + '</div>';
 }
 
+/** Подпись Powered by HU внизу каждой страницы. */
+function applyHU() {
+  const box = document.getElementById('hu'); if (!box) return;
+  const a = box.querySelector('a'), t = document.getElementById('hu-t');
+  if (t) t.textContent = T('powered');
+  const url = (CFG && CFG.hu_url) || ((LS.cache || {}).cfg || {}).hu_url || localStorage.getItem('tesa.hu') || '';
+  if (url) { a.href = url; a.removeAttribute('aria-disabled'); }
+  else { a.removeAttribute('href'); a.setAttribute('aria-disabled', 'true'); }
+}
+
+/** Адрес подписи берём публично — он нужен и до входа. */
+function loadBrand() {
+  fetch('api/brand').then((r) => r.json()).then((b) => {
+    if (b && b.hu_url) { try { localStorage.setItem('tesa.hu', b.hu_url); } catch (e) {} applyHU(); }
+  }).catch(() => {});
+}
+
 function applyNavLabels() {
-  const m = { 'nav-home-t': 'nav_home', 'nav-list-t': 'nav_list', 'nav-report-t': 'nav_report' };
+  const m = { 'nav-home-t': 'nav_home', 'nav-list-t': 'nav_list', 'nav-hours-t': 'nav_hours', 'nav-report-t': 'nav_report' };
   for (const id of Object.keys(m)) { const e = document.getElementById(id); if (e) e.textContent = T(m[id]); }
 }
 
@@ -218,7 +240,7 @@ function applyNavLabels() {
 function chrome0() {
   if (!ME || $('#top').hidden) return;
   $('#who').innerHTML =
-    `<span class="rolechip ${ME.role === 'foreman' ? 'ed' : 'ro'}" id="rolechip">${esc(ME.name)}</span>`
+    `<span class="rolechip ${isMgr(ME) ? 'ed' : 'ro'}" id="rolechip">${esc(ME.name)}</span>`
     + (LS.by ? '<br><span class="mono">' + esc(LS.by) + '</span>' : '')
     + (!ONLINE ? `<br><span class="offchip">${T('no_conn_chip')}</span>` : '')
     + (LS.queue.length ? `<br><span style="color:var(--acc)">${T('not_sent_chip', { n: LS.queue.length })}</span>` : '');
@@ -293,7 +315,7 @@ function viewHome() {
   const tM = LINES.reduce((a, x) => a + x.length_m, 0);
   const pA = tA ? LINES.reduce((a, x) => a + x.area_m2 * x.percent, 0) / tA : 0;
   const pM = tM ? LINES.reduce((a, x) => a + x.length_m * x.percent, 0) / tM : 0;
-  const rel = LINES.filter((x) => x.stages.release >= 100).length;
+  const rel = LINES.filter((x) => x.released).length;
   app.innerHTML = `
     ${logos('flat')}
     <div class="langrow">${langBar()}</div>
@@ -338,7 +360,7 @@ function viewHome() {
     if (f === 'open') rows = rows.filter((l) => l.percent > 0 && l.percent < 100);
     else if (f === 'todo') rows = rows.filter((l) => l.percent <= 0);
     else if (f === 'done') rows = rows.filter((l) => l.percent >= 100);
-    else if (f === 'rel') rows = rows.filter((l) => l.stages.release >= 100);
+    else if (f === 'rel') rows = rows.filter((l) => l.released);
     else if (f === 'part') rows = rows.filter((l) => l.partial);
     else if (f) rows = rows.filter((l) => l.medium === f);
     rows.sort((a, b) => a.name.localeCompare(b.name));
@@ -370,7 +392,7 @@ async function viewLine(id) {
   let note = q ? q.note : (L.note || '');
   let dirty = false;
 
-  const canEdit = ME && ME.role === 'foreman';
+  const canEdit = isMgr(ME);
   const BR = L.branches || [];
   const multi = BR.length > 1;
   const OPEN = {};
@@ -386,6 +408,7 @@ async function viewLine(id) {
         <div class="fullnm mono">${esc(L.name)} · ${esc(L.oper_temp || '')} / ${esc(L.design_temp || '')}${L.partial ? ` · <span class="badge p">${T('partial_ins')}</span>` : ''}</div>
         <div class="dims mono">${L.pipe_od ? n0(L.pipe_od) : '—'} <em>/</em> ${L.ins ? n0(L.ins) : '—'} <em>/</em> ${L.clad_od ? n0(L.clad_od) : '—'} <em>${T('mm')}</em></div>
         <div class="devel mono">${T('developed')} <b>${n0(L.dev)} ${T('mm')}</b></div>
+        ${L.release_date || L.release_note ? `<div class="small" style="margin-top:5px;color:var(--rel)">${T('rel_from_reg')}: <b>${esc(L.release_date ? dLabelFull(L.release_date) : L.release_note)}</b>${L.release_pct != null ? ` · ${n1(L.release_pct)}%` : ''}${L.release_date && L.release_note ? ' · ' + esc(L.release_note) : ''}</div>` : ''}
         <div class="small muted" style="margin-top:5px">${T('cladding_mat')} ${esc((L.al || []).join(', ') || '—')}${multi ? ` · ${T('branches_on_line')} <b>${BR.length}</b>` : ''}</div>
         ${L.drawing ? `<a class="dwg" href="drawings/${encodeURIComponent(L.drawing)}" target="_blank" rel="noopener">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
@@ -426,6 +449,22 @@ async function viewLine(id) {
       </div>
     </div>
 
+    ${(L.boxes || []).length ? `<div class="card pad mb">
+      <div class="spread mb"><b>${T('boxes_title')}</b><span class="small muted">${T('boxes_n', { n: n0(L.cases) })}</span></div>
+      <div class="small muted" style="margin-bottom:8px">${T('boxes_hint')}</div>
+      <div class="scrollx"><table class="tbl">
+        <thead><tr><th>№</th><th>${T('c_qty')}</th><th>DN</th><th>${T('b_ins')}</th><th>${T('b_pos')}</th><th>${T('b_what')}</th></tr></thead>
+        <tbody>${L.boxes.map((b) => `<tr>
+          <td class="mono">${esc(b.n || '')}</td>
+          <td class="mono">${b.qty > 1 ? '<b>' + n0(b.qty) + '</b>' : n0(b.qty)}</td>
+          <td class="mono">${esc(b.dn || '')}</td>
+          <td class="mono">${b.ins ? n0(b.ins) : ''}</td>
+          <td class="mono">${esc(b.pos || '')}</td>
+          <td style="text-align:left;white-space:normal">${esc([b.info, b.valve].filter(Boolean).join(' · '))}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>` : ''}
+
     <div class="card pad mb">
       <div class="spread mb"><b>${T('connects')}</b><span class="small muted">${(L.connect || []).length}</span></div>
       <div class="btns">${(L.connect || []).length
@@ -459,28 +498,71 @@ async function viewLine(id) {
 
   function drawBranches() {
     $('#brs').innerHTML = BR.map((b) => {
-      const bp = branchPercent(checks, b.id);
+      const bp = branchPercent(checks, b.id, L);
+      const c = checks.branches[b.id];
+      const bx = (L.boxes || []).filter((x) => (x.branch || (BR[0] && BR[0].id)) === b.id);
+      // чемоданы разворачиваем поштучно: строка с qty 2 даёт два чек-бокса
+      const boxItems = [];
+      for (const x of bx) for (let i = 0; i < (x.qty || 1); i++)
+        boxItems.push({ id: (x.qty > 1 ? x.n + '#' + (i + 1) : String(x.n)), n: x.n, dn: x.dn, ins: x.ins });
+
       const info = [
-        [T('k_elbows'), n0(b.elbows)], [T('k_straight'), n1(b.straight_m)],
-        [T('k_ties'), n0(b.ties)], [T('k_cones'), n0(b.cones)], [T('k_cases'), n0(b.cases)],
+        [T('k_straight'), n1(metreBase(b))], [T('k_elbows'), n0(b.elbows)],
+        [T('k_cases'), n0(b.cases)], [T('c_m2'), n1(b.area_m2)],
+        [T('k_hours'), n1((b.hours && b.hours.total) || 0)],
       ];
+
+      const grid = (key, kind, items, done) => `<div class="cbs">${items.map((it) => {
+        const on = done.includes(it.v);
+        return `<button class="cb${on ? ' on' : ''}" data-b="${b.id}" data-st="${key}" data-${kind}="${esc(it.v)}"
+          ${canEdit ? '' : 'disabled'} title="${esc(it.t || '')}">${esc(it.l)}</button>`;
+      }).join('')}</div>`;
+
       const body = STAGES.map((s) => {
-        const p = branchStagePercent(checks, b.id, s.key);
-        let ctrl;
-        if (s.kind === 'single') {
-          const on = checks.branches[b.id].release.done;
-          ctrl = `<div class="lv one"><button class="${on ? 'on full' : ''}" data-b="${b.id}" data-rel="1" ${canEdit ? '' : 'disabled'}>${on ? T('released_mark') : T('mark_release')}</button></div>`;
+        const p = branchStagePercent(checks, b.id, s.key, L);
+        let ctrl = '';
+
+        if (s.kind === 'pct') {
+          const v = c[s.key] || 0;
+          ctrl = `<div class="inrow">
+            <input class="numin" type="number" inputmode="decimal" min="0" max="100" step="5" value="${v || ''}"
+              data-b="${b.id}" data-pct="${s.key}" placeholder="0" ${canEdit ? '' : 'disabled'}>
+            <span class="unit">%</span>
+            ${canEdit ? `<span class="quick">
+              <button class="btn sm" data-b="${b.id}" data-set="${s.key}" data-v="50">50</button>
+              <button class="btn sm" data-b="${b.id}" data-set="${s.key}" data-v="100">100</button>
+              <button class="btn sm" data-b="${b.id}" data-set="${s.key}" data-v="0">0</button></span>` : ''}
+          </div>`;
+
         } else if (s.kind === 'insp') {
           ctrl = `<div class="lv two">${INSP_LEVELS.map((lv) => {
-            const on = checks.branches[b.id].inspection.levels.includes(lv);
+            const on = c.inspection.levels.includes(lv);
             return `<button class="${on ? 'on' + (lv === 100 ? ' full' : '') : ''}" data-b="${b.id}" data-insp="${lv}" ${canEdit ? '' : 'disabled'}>${lv}%</button>`;
           }).join('')}</div>`;
-        } else {
-          ctrl = `<div class="lv">${LEVELS.map((lv) => {
-            const on = (checks.branches[b.id][s.key] || []).includes(lv);
-            return `<button class="${on ? 'on' + (lv === 100 ? ' full' : '') : ''}" data-b="${b.id}" data-st="${s.key}" data-lv="${lv}" ${canEdit ? '' : 'disabled'}>${lv}%</button>`;
-          }).join('')}</div>`;
+
+        } else {  // qty: метры + отводы (+ чемоданы для металла)
+          const st = c[s.key] || { m: 0, el: [], bx: [] };
+          const isClad = s.key === 'cladding';
+          const els = Array.from({ length: b.elbows || 0 }, (_, i) => ({ v: String(i), l: String(i + 1) }));
+          ctrl = `
+            ${metreBase(b) > 0 ? `<div class="inrow">
+              <input class="numin" type="number" inputmode="decimal" min="0" max="${metreBase(b)}" step="0.5"
+                value="${st.m || ''}" data-b="${b.id}" data-m="${s.key}" placeholder="0" ${canEdit ? '' : 'disabled'}>
+              <span class="unit">${T('of_m', { n: n1(metreBase(b)) })}</span>
+              ${canEdit ? `<span class="quick"><button class="btn sm" data-b="${b.id}" data-mall="${s.key}">${T('all_m')}</button></span>` : ''}
+            </div>` : ''}
+            ${els.length ? `<div class="cbwrap">
+              <div class="cbt small">${T('elbows_done', { n: st.el.length, t: els.length })}
+                ${canEdit ? `<button class="btn sm" data-b="${b.id}" data-elall="${s.key}">${T('all_short')}</button>` : ''}</div>
+              ${grid(s.key, 'el', els.map((e) => ({ v: e.v, l: e.l })), st.el.map(String))}
+            </div>` : ''}
+            ${isClad && boxItems.length ? `<div class="cbwrap">
+              <div class="cbt small">${T('boxes_done', { n: (st.bx || []).length, t: boxItems.length })}
+                ${canEdit ? `<button class="btn sm" data-b="${b.id}" data-bxall="1">${T('all_short')}</button>` : ''}</div>
+              ${grid(s.key, 'bx', boxItems.map((x) => ({ v: x.id, l: '№' + x.n, t: `DN${x.dn} · ${x.ins} ${T('mm')}` })), (st.bx || []).map(String))}
+            </div>` : ''}`;
         }
+
         return `<div class="pos">
           <div class="ph">
             <span class="w mono">${s.weight}%</span>
@@ -523,32 +605,103 @@ async function viewLine(id) {
     drawBranches();
   });
 
+  /* ввод чисел — без перерисовки, чтобы не сбивать курсор */
+  $('#brs').addEventListener('input', (e) => {
+    const i = e.target;
+    if (!canEdit || !i.classList || !i.classList.contains('numin')) return;
+    const bc = checks.branches[i.dataset.b];
+    if (!bc) return;
+    const v = Math.max(0, +i.value || 0);
+    if (i.dataset.pct) bc[i.dataset.pct] = Math.min(100, v);
+    else if (i.dataset.m) {
+      const b = BR.find((x) => x.id === i.dataset.b) || {};
+      bc[i.dataset.m].m = Math.min(v, metreBase(b));
+    }
+    dirty = true;
+    const pos = i.closest('.pos');
+    const key = i.dataset.pct || i.dataset.m;
+    if (pos) {
+      const p = branchStagePercent(checks, i.dataset.b, key, L);
+      const el2 = pos.querySelector('.p'); if (el2) { el2.textContent = n1(p) + '%'; el2.style.color = pctColor(p); }
+    }
+    liveTotals();
+  });
+
+  function liveTotals() {
+    const tot = linePercent(L, checks);
+    $('#tbar').innerHTML = bar(tot);
+    const d = $('.total .dial b'); if (d) d.textContent = n1(tot);
+    for (const b of BR) {
+      const card = $(`.branch[data-id="${b.id}"]`);
+      if (!card) continue;
+      const p = branchPercent(checks, b.id, L);
+      const t = card.querySelector('.bp'); if (t) { t.textContent = n1(p) + '%'; t.style.color = pctColor(p); }
+      const bb = card.querySelector('.bbar'); if (bb) bb.innerHTML = bar(p);
+    }
+    $('#upd').textContent = T('not_saved'); $('#upd').style.color = 'var(--acc)';
+  }
+
   $('#brs').addEventListener('click', (e) => {
     const bh = e.target.closest('.bh');
     if (bh) { const id2 = bh.parentElement.dataset.id; OPEN[id2] = !OPEN[id2]; drawBranches(); return; }
     const btn = e.target.closest('button'); if (!btn || !canEdit) return;
 
+    // «всем» — скопировать позицию на все ветки линии
     if (btn.dataset.all) {
       const st = btn.dataset.all, from = checks.branches[btn.dataset.from];
       for (const b of BR) {
         const t = checks.branches[b.id];
-        if (st === 'release') t.release.done = from.release.done;
-        else if (st === 'inspection') t.inspection.levels = from.inspection.levels.slice();
-        else t[st] = (from[st] || []).slice();
+        if (st === 'inspection') t.inspection.levels = from.inspection.levels.slice();
+        else if (st === 'materials' || st === 'finishing') t[st] = from[st];
+        else {
+          // метры и отводы копируем долей: та же готовность позиции
+          const src = BR.find((x) => x.id === btn.dataset.from) || {};
+          const share = (() => {
+            const tot = metreBase(src) + 1.5 * (+src.elbows || 0);
+            const done = Math.min(from[st].m || 0, metreBase(src)) + 1.5 * ((from[st].el || []).length);
+            return tot > 0 ? Math.min(1, done / tot) : 0;
+          })();
+          t[st].m = Math.round(metreBase(b) * share * 10) / 10;
+          const ne = Math.round((+b.elbows || 0) * share);
+          t[st].el = Array.from({ length: ne }, (_, i) => i);
+          if (st === 'cladding' && t[st].bx) {
+            const all = (L.boxes || []).filter((x) => x.branch === b.id).length;
+            t[st].bx = share >= 1 ? t[st].bx : t[st].bx;
+          }
+        }
       }
       dirty = true; drawBranches(); toast(T('applied_all'));
       return;
     }
+
     const bc = checks.branches[btn.dataset.b];
     if (!bc) return;
-    if (btn.dataset.rel) bc.release.done = !bc.release.done;
-    else if (btn.dataset.insp) {
+
+    if (btn.dataset.set) { bc[btn.dataset.set] = +btn.dataset.v; }
+    else if (btn.dataset.mall) {
+      const b = BR.find((x) => x.id === btn.dataset.b) || {};
+      const st = bc[btn.dataset.mall];
+      st.m = (st.m >= metreBase(b)) ? 0 : metreBase(b);
+    } else if (btn.dataset.elall) {
+      const b = BR.find((x) => x.id === btn.dataset.b) || {};
+      const st = bc[btn.dataset.elall];
+      st.el = st.el.length >= (b.elbows || 0) ? [] : Array.from({ length: b.elbows || 0 }, (_, i) => i);
+    } else if (btn.dataset.bxall) {
+      const items = (L.boxes || []).filter((x) => x.branch === btn.dataset.b);
+      const all = [];
+      for (const x of items) for (let i = 0; i < (x.qty || 1); i++) all.push(x.qty > 1 ? x.n + '#' + (i + 1) : String(x.n));
+      bc.cladding.bx = (bc.cladding.bx || []).length >= all.length ? [] : all;
+    } else if (btn.dataset.el != null) {
+      const st = bc[btn.dataset.st], v = +btn.dataset.el, i = st.el.indexOf(v);
+      i >= 0 ? st.el.splice(i, 1) : st.el.push(v);
+    } else if (btn.dataset.bx != null) {
+      const st = bc[btn.dataset.st];
+      st.bx = st.bx || [];
+      const v = btn.dataset.bx, i = st.bx.indexOf(v);
+      i >= 0 ? st.bx.splice(i, 1) : st.bx.push(v);
+    } else if (btn.dataset.insp) {
       const lv = +btn.dataset.insp, a = bc.inspection.levels, i = a.indexOf(lv);
       i >= 0 ? a.splice(i, 1) : a.push(lv);
-    } else if (btn.dataset.lv) {
-      const a = bc[btn.dataset.st], lv = +btn.dataset.lv, i = a.indexOf(lv);
-      if (i >= 0) { for (let k = a.length - 1; k >= 0; k--) if (a[k] >= lv) a.splice(k, 1); }
-      else { for (const x of LEVELS) if (x <= lv && !a.includes(x)) a.push(x); }
     } else return;
     dirty = true; drawBranches();
   });
@@ -676,6 +829,8 @@ async function viewReport() {
     ${logos('flat')}
 
     <div class="stats mb">
+      ${isMgr(ME) && TT.percent_h != null ? `<div class="stat"><b class="mono" style="color:${pctColor(TT.percent_h)}">${n1(TT.percent_h)}%</b><span>${T('st_hours')}</span>
+        <div class="sub2 mono">${n1(TT.earned_h)} ${T('st_norm_h', { n: n0(TT.norm_h) })}</div></div>` : ''}
       <div class="stat"><b class="mono" style="color:${pctColor(TT.percent_a)}">${n1(TT.percent_a)}%</b><span>${T('st_area')}</span>
         <div class="sub2 mono">${T('st_of', { a: n1(TT.area_m2 * TT.percent_a / 100), b: n1(TT.area_m2), u: T('c_m2') })}</div></div>
       <div class="stat"><b class="mono" style="color:${pctColor(TT.percent_m)}">${n1(TT.percent_m)}%</b><span>${T('st_len')}</span>
@@ -694,13 +849,12 @@ async function viewReport() {
     <div class="card mb">
       <div class="pad spread"><b>${T('by_lines')}</b><span class="small muted">${T('pcs', { n: R.lines.length })}</span></div>
       <div class="scrollx"><table class="tbl">
-        <thead><tr><th>${T('h_line')}</th><th>${T('h_branches')}</th><th>${T('c_m')}</th><th>${T('c_m2')}</th><th>${T('h_rel')}</th><th>${T('h_mat')}</th><th>${T('h_ins')}</th><th>${T('h_clad')}</th><th>${T('h_fin')}</th><th>${T('h_insp')}</th><th>${T('h_pct')}</th></tr></thead>
+        <thead><tr><th>${T('h_line')}</th><th>${T('h_branches')}</th><th>${T('c_m')}</th><th>${T('c_m2')}</th><th>${T('h_mat')}</th><th>${T('h_ins')}</th><th>${T('h_clad')}</th><th>${T('h_fin')}</th><th>${T('h_insp')}</th><th>${T('h_pct')}</th></tr></thead>
         <tbody>${R.lines.slice().sort((a, b) => b.percent - a.percent || a.name.localeCompare(b.name)).map((l) => `
           <tr data-go="#/line/${l.id}" style="cursor:pointer">
             <td>${esc(l.short)}</td>
             <td class="mono">${l.branch_count || 1}</td>
             <td class="mono">${n1(l.length_m)}</td><td class="mono">${n1(l.area_m2)}</td>
-            <td class="mono">${n1(l.stages.release)}</td>
             <td class="mono">${n1(l.stages.materials)}</td>
             <td class="mono">${n1(l.stages.insulation)}</td>
             <td class="mono">${n1(l.stages.cladding)}</td>
@@ -712,7 +866,7 @@ async function viewReport() {
           <td>${T('h_total')}</td>
           <td class="mono">${R.lines.reduce((a, l) => a + (l.branch_count || 1), 0)}</td>
           <td class="mono">${n1(TT.length_m)}</td><td class="mono">${n1(TT.area_m2)}</td>
-          ${['release', 'materials', 'insulation', 'cladding', 'finishing', 'inspection'].map((k) => {
+          ${['materials', 'insulation', 'cladding', 'finishing', 'inspection'].map((k) => {
             const s = R.stages.find((x) => x.key === k); return `<td class="mono">${n1(s.percent_a)}</td>`;
           }).join('')}
           <td class="mono">${n1(TT.percent_a)}</td>
@@ -731,9 +885,9 @@ async function viewReport() {
 
   $('#pdf').addEventListener('click', () => window.print());
   $('#csv').addEventListener('click', () => {
-    const head = [T('h_line'), T('h_branches'), T('h_len'), T('h_area'), 'Release', 'Materials',
+    const head = [T('h_line'), T('h_branches'), T('h_len'), T('h_area'), 'Materials',
       'Insulation', 'Cladding', 'Finishing', 'Inspection', T('h_pct')].join(';');
-    const body = R.lines.map((l) => [l.short, l.branch_count || 1, l.length_m, l.area_m2, l.stages.release, l.stages.materials, l.stages.insulation, l.stages.cladding, l.stages.finishing, l.stages.inspection, l.percent].join(';')).join('\n');
+    const body = R.lines.map((l) => [l.short, l.branch_count || 1, l.length_m, l.area_m2, l.stages.materials, l.stages.insulation, l.stages.cladding, l.stages.finishing, l.stages.inspection, l.percent].join(';')).join('\n');
     dl('TESA_progress_report.csv', '﻿' + head + '\n' + body, 'text/csv');
   });
   $('#json').addEventListener('click', async () => {
@@ -754,7 +908,7 @@ async function viewReport() {
 
 /* --- меню режима: имя работника и выход --- */
 function roleMenu() {
-  const canEdit = ME && ME.role === 'foreman';
+  const canEdit = isMgr(ME);
   const box = el(`<div class="sheetwrap"><div class="sheet">
     <div class="spread mb"><b>${T('mode', { x: esc(ME.name) })}</b><button class="btn small" id="cls" style="min-height:34px;padding:6px 12px">✕</button></div>
     <p class="small muted" style="margin:0 0 12px">${canEdit
@@ -773,7 +927,8 @@ function roleMenu() {
         <button class="btn small" id="predw" style="min-height:38px">${T('load_drawings')}</button>
       </div>
     </div>
-    <button class="btn wide" id="out" style="margin-top:10px">${T('switch_user')}</button>
+    <button class="btn wide" id="log" style="margin-top:10px">${T('log_title')}</button>
+    <button class="btn wide" id="out" style="margin-top:8px">${T('switch_user')}</button>
   </div></div>`);
   document.body.appendChild(box);
   const close = () => box.remove();
@@ -821,10 +976,374 @@ function roleMenu() {
     btn.disabled = false; btn.textContent = T('load_drawings');
   });
 
+  $('#log', box).addEventListener('click', () => { close(); location.hash = '#/log'; });
+
   $('#out', box).addEventListener('click', async () => {
     try { await api('logout', { method: 'POST' }); } catch (e) {}
     LS.t = null; ME = null; LS.me = null; LINES = []; DETAIL = {};
     close(); location.hash = '#/'; render();
+  });
+}
+
+/* --- табель часов --- */
+const WD_SHORT = { ru: ['вс','пн','вт','ср','чт','пт','сб'], en: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], et: ['P','E','T','K','N','R','L'] };
+const dLabel = (iso) => {
+  const d = HOURS.parse(iso); if (!d) return iso;
+  const w = (WD_SHORT[I18N.lang] || WD_SHORT.ru)[d.getDay()];
+  return `${d.getDate()}.${(d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1)}`;
+};
+const dLabelFull = (iso) => {
+  const d = HOURS.parse(iso); if (!d) return iso;
+  return d.toLocaleDateString(loc(), { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+const dWeek = (iso) => {
+  const d = HOURS.parse(iso); if (!d) return '';
+  return (WD_SHORT[I18N.lang] || WD_SHORT.ru)[d.getDay()];
+};
+
+
+/** S-кривая готовности: план, факт, прогноз. Чистый SVG, без библиотек. */
+function curveSVG(cv, plan) {
+  if (!cv || !cv.plan || !cv.plan.length) return '';
+  const W = 640, Hh = 260, ML = 38, MR = 12, MT = 14, MB = 30;
+  const days = cv.plan.map((p) => p.d);
+  const x0 = HOURS.parse(days[0]), x1 = HOURS.parse(days[days.length - 1]);
+  const span = Math.max(1, (x1 - x0) / 86400000);
+  const X = (d) => ML + ((HOURS.parse(d) - x0) / 86400000 / span) * (W - ML - MR);
+  const Y = (v) => MT + (1 - Math.max(0, Math.min(100, v)) / 100) * (Hh - MT - MB);
+  const path = (arr) => arr.length ? 'M' + arr.map((p) => `${X(p.d).toFixed(1)},${Y(p.v).toFixed(1)}`).join('L') : '';
+
+  const grid = [0, 25, 50, 75, 100].map((v) =>
+    `<line x1="${ML}" y1="${Y(v)}" x2="${W - MR}" y2="${Y(v)}" stroke="var(--line2)" stroke-width="1"/>
+     <text x="${ML - 6}" y="${Y(v) + 4}" text-anchor="end" font-size="11" fill="var(--ink3)">${v}</text>`).join('');
+
+  // подписи месяцев/дат по краям и «сегодня»
+  const tx = (d, label, col, anchor) => `<line x1="${X(d)}" y1="${MT}" x2="${X(d)}" y2="${Hh - MB}" stroke="${col}" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="${X(d) + (anchor === 'end' ? -3 : 0)}" y="${Hh - MB + 15}" text-anchor="${anchor || 'middle'}" font-size="12" fill="${col}">${label}</text>`;
+
+  const last = cv.fact.length ? cv.fact[cv.fact.length - 1] : null;
+  return `<svg viewBox="0 0 ${W} ${Hh}" class="curve" role="img">
+    ${grid}
+    <path d="${path(cv.plan)}" fill="none" stroke="var(--ink3)" stroke-width="2" stroke-dasharray="6 4"/>
+    ${cv.forecast.length ? `<path d="${path(cv.forecast)}" fill="none" stroke="var(--rel)" stroke-width="2.5" stroke-dasharray="2 4"/>` : ''}
+    <path d="${path(cv.fact)}" fill="none" stroke="var(--acc)" stroke-width="3"/>
+    ${last ? `<circle cx="${X(last.d)}" cy="${Y(last.v)}" r="5" fill="var(--acc)"/>
+      <text x="${X(last.d) + 10}" y="${Y(last.v) - 12}" font-size="14" font-weight="700" fill="var(--acc)">${n1(last.v)}%</text>` : ''}
+    ${tx(cv.today, T('curve_today'), 'var(--ink2)')}
+    ${tx(cv.deadline, T('curve_deadline'), 'var(--ok)', 'end')}
+    <text x="${ML}" y="${Hh - MB + 15}" font-size="11" fill="var(--ink3)">${dLabel(cv.start)}</text>
+  </svg>`;
+}
+
+async function viewHours() {
+  chrome(T('hrs_title'), '', false);
+  const app = $('#app');
+  app.innerHTML = `<div class="empty">${T('rep_calc')}</div>`;
+
+  let H;
+  try { H = await api('hours'); LS.cache = Object.assign(LS.cache || {}, { hours: H }); }
+  catch (e) { H = (LS.cache || {}).hours; if (!H) { app.innerHTML = `<div class="empty">${T('no_offline')}</div>`; return; } }
+
+  const canEdit = isMgr(ME);
+  const s = H.summary, plan = H.plan;
+  const crew = H.crew.slice();
+  for (const d of Object.keys(H.hours)) for (const who of Object.keys(H.hours[d])) if (!crew.includes(who)) crew.push(who);
+
+  chrome(T('hrs_title'), T('hrs_sub', { b: n0(plan.budget), d: dLabelFull(plan.deadline) }), false);
+
+  const usedPct = Math.max(0, Math.min(100, s.usedPct));
+  const overspend = s.gap < 0;
+  const days = Object.keys(H.hours).sort();
+  const today = HOURS.today();
+  const cols = days.slice();
+  if (!cols.includes(today)) cols.push(today);
+
+  const rowsHtml = crew.map((who) => {
+    const tot = s.byPerson[who] || 0;
+    return `<tr><td>${esc(who)}</td>${cols.map((d) => {
+      const v = (H.hours[d] || {})[who] || 0;
+      return `<td class="mono">${v ? n1(v) : '<span class="muted">·</span>'}</td>`;
+    }).join('')}<td class="mono"><b>${tot ? n1(tot) : '—'}</b></td></tr>`;
+  }).join('');
+
+  const fc = s.finishDate ? {
+    late: s.lateDays > 0,
+    days: Math.abs(s.lateDays || 0),
+  } : null;
+
+  app.innerHTML = `
+    <div class="printhead">
+      <div class="printlogos">
+        <img class="bti" src="logos/bti.png" alt="BTI Service">
+        <img class="upm" src="logos/upm.png" alt="UPM">
+        <img class="valmet" src="logos/valmet.png" alt="Valmet">
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div><b style="font-size:15pt">${T('hrs_head')}</b>
+        <div style="font-size:9pt">${T('hrs_sub', { b: n0(plan.budget), d: dLabelFull(plan.deadline) })}</div></div>
+        <div style="font-size:9pt;text-align:right">${T('hrs_made', { d: new Date().toLocaleString(loc()) })}<br>${esc((ME && ME.name) || '')}</div>
+      </div>
+    </div>
+
+    <div class="card pad mb">
+      <div class="spread">
+        <div>
+          <div class="small muted" style="text-transform:uppercase;letter-spacing:.06em">${T('hrs_left')}</div>
+          <div class="mono" style="font-size:30px;font-weight:700;letter-spacing:-.02em;color:${s.remaining > 0 ? 'var(--ink)' : 'var(--acc)'}">${n1(s.remaining)} <span style="font-size:15px;color:var(--ink3);font-weight:500">${T('c_h')}</span></div>
+          <div class="small muted mono">${T('hrs_used_of', { s: n1(s.spent), b: n0(s.budget) })}</div>
+        </div>
+        ${dial(usedPct)}
+      </div>
+      <div style="margin-top:10px">${bar(usedPct)}</div>
+      <div class="dual2 small" style="margin-top:8px">
+        <span><b class="mono">${n1(s.spent)} ${T('c_h')}</b> · ${n1(s.usedPct)}% <span class="muted">${T('hrs_spent')}</span></span>
+        <span><b class="mono">${n1(s.remaining)} ${T('c_h')}</b> · ${n1(s.remainingPct)}% <span class="muted">${T('hrs_left')}</span></span>
+      </div>
+      <div class="small muted" style="margin-top:8px">
+        <b>${T('hrs_deadline')}: ${dLabelFull(plan.deadline)}</b> —
+        ${s.overdue ? `<span style="color:var(--acc)">${T('hrs_overdue')}</span>`
+                    : T('hrs_days_left', { n: s.daysLeft }) + ' · ' + T('hrs_workdays', { n: s.workdaysLeft })}
+      </div>
+    </div>
+
+    <div class="stats mb">
+      <div class="stat"><b class="mono">${n1(s.crewAffordable)}</b><span>${T('hrs_k_afford')}</span>
+        <div class="sub2 small">${T('hrs_s_afford', { d: dLabelFull(plan.deadline) })}</div></div>
+      <div class="stat"><b class="mono">${n1(s.crewLast)}</b><span>${T('hrs_k_now')}</span>
+        <div class="sub2 small">${T('hrs_s_now', { h: n1(s.lastDayHours) })}</div></div>
+      <div class="stat"><b class="mono">${n1(s.pace)}</b><span>${T('hrs_k_pace')}</span>
+        <div class="sub2 small">${T('hrs_s_pace')}</div></div>
+      <div class="stat"><b class="mono" style="color:${overspend ? 'var(--acc)' : 'var(--ok)'}">${overspend ? '−' : '+'}${n1(Math.abs(s.gap))}</b>
+        <span>${overspend ? T('hrs_k_gap_bad') : T('hrs_k_gap_ok')}</span>
+        <div class="sub2 small">${T('hrs_s_gap', { d: dLabelFull(plan.deadline) })}</div></div>
+    </div>
+
+    ${s.daysAtLast != null ? `<div class="note ${s.runsOutAtLast && s.runsOutAtLast < plan.deadline ? 'warn' : 'ok'} mb">
+      ${T('hrs_runs_out', { n: s.daysAtLast, d: s.runsOutAtLast ? dLabelFull(s.runsOutAtLast) : dLabelFull(plan.deadline) })}
+      <div class="small muted" style="margin-top:3px">${T('hrs_crew_afford_d', { d: dLabelFull(plan.deadline) })}</div>
+    </div>` : ''}
+
+    ${H.curve ? `<div class="card pad mb">
+      <div class="spread mb"><b>${T('curve_title')}</b>
+        <span class="small"><span class="lgd f">${T('curve_fact')}</span> <span class="lgd p">${T('curve_plan')}</span> <span class="lgd c">${T('curve_fc')}</span></span></div>
+      ${curveSVG(H.curve, plan)}
+      <div class="small muted" style="margin-top:6px">${T('curve_hint')}</div>
+    </div>` : ''}
+
+    ${s.progress != null ? `<div class="card pad mb">
+      <div class="spread"><b>${T('hrs_eff_title')}</b>
+        <span class="mono" style="color:${s.efficiency >= 1 ? 'var(--ok)' : 'var(--acc)'};font-weight:700">${s.efficiency >= 1 ? '▲' : '▼'} ${n1(s.efficiency * 100)}%</span></div>
+      <div class="small muted" style="margin-top:4px">${T('hrs_eff', { p: n1(s.progress), u: n1(s.usedPct) })} —
+        ${s.efficiency >= 1 ? T('hrs_eff_good') : T('hrs_eff_bad')}</div>
+      <div class="dual" style="margin-top:8px"><span class="lab">%</span>${bar(s.progress)}<span class="mono small" style="width:52px;text-align:right">${n1(s.progress)}%</span></div>
+      <div class="dual" style="margin-top:4px"><span class="lab">${T('c_h')}</span>${bar(s.usedPct)}<span class="mono small" style="width:52px;text-align:right">${n1(s.usedPct)}%</span></div>
+    </div>` : ''}
+
+    <div class="card pad mb fc">
+      <div class="spread"><b>${T('hrs_fc_title')}</b>
+        ${s.finishDate ? `<span class="mono" style="font-weight:700;color:${fc.late ? 'var(--acc)' : 'var(--ok)'}">${dLabelFull(s.finishDate)}</span>` : ''}</div>
+      ${s.finishDate ? `
+        <div style="font-size:15px;margin-top:6px">${T('hrs_fc_date', { d: dLabelFull(s.finishDate) })} —
+          <b style="color:${fc.late ? 'var(--acc)' : 'var(--ok)'}">${fc.late
+            ? T('hrs_fc_late', { n: fc.days, dl: dLabelFull(plan.deadline) })
+            : T('hrs_fc_in_time', { n: fc.days, dl: dLabelFull(plan.deadline) })}</b></div>
+        <div class="small muted" style="margin-top:6px">${T('hrs_fc_hours', { t: n0(s.totalNeeded), p: n1(s.hoursPerPct), r: n0(s.hoursToFinish) })}</div>
+        <div class="small" style="margin-top:4px;color:${s.budgetAtFinish >= 0 ? 'var(--ok)' : 'var(--acc)'}">${s.budgetAtFinish >= 0
+            ? T('hrs_fc_budget_ok', { n: n0(s.budgetAtFinish) })
+            : T('hrs_fc_budget_bad', { n: n0(-s.budgetAtFinish) })}</div>
+        <div class="small muted" style="margin-top:4px">${T('hrs_fc_crew', { n: n1(s.dailyCrew) })}</div>
+        <div class="timeline" style="margin-top:10px">
+          <div class="tl"><i style="width:${Math.max(2, Math.min(100, s.progress))}%"></i></div>
+          <div class="spread small muted mono" style="margin-top:3px"><span>${n1(s.progress)}%</span><span>100%</span></div>
+        </div>`
+      : `<div class="small muted" style="margin-top:6px">${T('hrs_fc_none')}</div>`}
+    </div>
+
+    <div class="card pad mb noprint" id="daybox">
+      <div class="spread mb"><b>${T('hrs_day')}</b>
+        <input type="date" id="hdate" value="${today}" max="${plan.deadline}" min="${plan.start}"
+          style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--card)">
+      </div>
+      <div class="spread">
+        <span class="small muted" id="dhint"></span>
+        ${canEdit ? `<span class="row" style="gap:6px"><button class="btn sm" id="hfill">${T('hrs_fill_plan')}</button>
+          <button class="btn sm" id="hclr">${T('hrs_clear')}</button></span>` : ''}
+      </div>
+      <div id="dlist" style="margin-top:8px"></div>
+      <div class="daytot mono" id="dtot"></div>
+      ${canEdit ? `<button class="btn pri" id="hsave" style="width:100%;margin-top:10px">${T('hrs_save')}</button>`
+                : `<div class="note" style="margin-top:10px">${T('hrs_ro')}</div>`}
+    </div>
+
+    <div class="card mb">
+      <div class="pad spread"><b>${T('hrs_table')}</b>
+        <span class="row noprint" style="gap:6px">
+          <button class="btn sm" id="hpdf">${T('hrs_print')}</button>
+          <button class="btn sm" id="hcsv">${T('hrs_csv')}</button></span></div>
+      <div class="scrollx"><table class="tbl">
+        <thead><tr><th>${T('hrs_person')}</th>${cols.map((d) => `<th>${dLabel(d)}<br><span style="font-weight:400">${dWeek(d)}</span></th>`).join('')}<th>${T('hrs_total')}</th></tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="${cols.length + 2}">${T('hrs_no_rows')}</td></tr>`}</tbody>
+        <tfoot><tr><td>${T('hrs_total')}</td>${cols.map((d) => `<td class="mono"><b>${s.byDay[d] ? n1(s.byDay[d]) : '·'}</b></td>`).join('')}<td class="mono"><b>${n1(s.spent)}</b></td></tr></tfoot>
+      </table></div>
+    </div>
+
+    ${canEdit ? `<div class="card pad mb noprint">
+      <b>${T('hrs_settings')}</b>
+      <div class="row wrap" style="margin-top:8px;gap:8px">
+        <label class="small muted">${T('hrs_budget_f')}<br><input id="pbudget" class="mono" type="number" step="1" value="${plan.budget}" style="width:110px"></label>
+        <label class="small muted">${T('hrs_deadline_f')}<br><input id="pdead" type="date" value="${plan.deadline}"></label>
+        <label class="small muted">${T('hrs_start_f')}<br><input id="pstart" type="date" value="${plan.start}"></label>
+      </div>
+      <div class="small muted" style="margin-top:10px">${T('hrs_sched')}</div>
+      <div class="row" style="gap:8px;margin-top:4px">
+        <input id="pwd" class="mono" type="number" step="0.5" value="${plan.schedule[1]}" style="width:70px">
+        <input id="psat" class="mono" type="number" step="0.5" value="${plan.schedule[6]}" style="width:70px">
+        <input id="psun" class="mono" type="number" step="0.5" value="${plan.schedule[0]}" style="width:70px">
+      </div>
+      <div class="small muted" style="margin-top:10px">${T('hrs_crew')}</div>
+      <textarea id="pcrew" rows="5" style="width:100%;margin-top:4px" class="mono">${esc(H.crew.join('\n'))}</textarea>
+      <button class="btn" id="psave" style="width:100%;margin-top:10px">${T('hrs_save_plan')}</button>
+    </div>` : ''}
+
+    ${H.updated ? `<p class="small muted" style="text-align:center">${T('hrs_last', { d: new Date(H.updated).toLocaleString(loc()), u: esc(H.updated_by || '') })}</p>` : ''}
+  `;
+
+  /* ---- ввод часов за день ---- */
+  const dateInp = $('#hdate');
+  const drawDay = () => {
+    const date = dateInp.value;
+    const ph = HOURS.dayPlan(date, plan.schedule);
+    $('#dhint').innerHTML = ph ? T('hrs_plan_day', { n: n1(ph) }) : `<span style="color:var(--warn)">${T('hrs_dayoff')}</span>`;
+    const cur = H.hours[date] || {};
+    $('#dlist').innerHTML = crew.map((who) => `<div class="hrow">
+      <span>${esc(who)}</span>
+      <input class="mono hinp" data-who="${esc(who)}" type="number" inputmode="decimal" step="0.5" min="0" max="24"
+        value="${cur[who] || ''}" placeholder="0"${canEdit ? '' : ' disabled'}>
+    </div>`).join('');
+    recount();
+  };
+  const recount = () => {
+    let t = 0;
+    for (const i of document.querySelectorAll('.hinp')) t += +i.value || 0;
+    $('#dtot').textContent = T('hrs_day_total', { n: n1(t) });
+  };
+  dateInp.addEventListener('change', drawDay);
+  $('#dlist').addEventListener('input', recount);
+  drawDay();
+
+  if (canEdit) {
+    $('#hfill').addEventListener('click', () => {
+      const ph = HOURS.dayPlan(dateInp.value, plan.schedule) || 0;
+      for (const i of document.querySelectorAll('.hinp')) i.value = ph || '';
+      recount();
+    });
+    $('#hclr').addEventListener('click', () => {
+      for (const i of document.querySelectorAll('.hinp')) i.value = '';
+      recount();
+    });
+    $('#hsave').addEventListener('click', async () => {
+      const btn = $('#hsave'); btn.disabled = true;
+      const entries = {};
+      for (const i of document.querySelectorAll('.hinp')) { const v = +i.value || 0; if (v > 0) entries[i.dataset.who] = v; }
+      const date = dateInp.value;
+      try {
+        await api('hours/day', { method: 'PUT', body: { date, entries, by: LS.by } });
+        toast(T('hrs_saved', { d: dLabelFull(date), n: n1(Object.values(entries).reduce((a, b) => a + b, 0)) }));
+        viewHours();
+      } catch (e) { toast(e.message, 3000); btn.disabled = false; }
+    });
+    $('#psave').addEventListener('click', async () => {
+      const btn = $('#psave'); btn.disabled = true;
+      const wd = +$('#pwd').value || 0, sat = +$('#psat').value || 0, sun = +$('#psun').value || 0;
+      try {
+        await api('hours/plan', {
+          method: 'PUT',
+          body: {
+            budget: +$('#pbudget').value || 0,
+            deadline: $('#pdead').value, start: $('#pstart').value,
+            schedule: [sun, wd, wd, wd, wd, wd, sat],
+            crew: $('#pcrew').value.split('\n').map((x) => x.trim()).filter(Boolean),
+          },
+        });
+        toast(T('hrs_plan_saved'));
+        viewHours();
+      } catch (e) { toast(e.message, 3000); btn.disabled = false; }
+    });
+  }
+
+  $('#hpdf').addEventListener('click', () => window.print());
+
+  $('#hcsv').addEventListener('click', () => {
+    const rows = [[T('hrs_person'), ...cols, T('hrs_total')]];
+    for (const who of crew) rows.push([who, ...cols.map((d) => (H.hours[d] || {})[who] || ''), s.byPerson[who] || 0]);
+    rows.push([T('hrs_total'), ...cols.map((d) => s.byDay[d] || ''), s.spent]);
+    const csv = '﻿' + rows.map((r) => r.join(';')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = 'tesa-hours.csv'; a.click();
+  });
+}
+
+
+/* --- журнал изменений: кто и когда --- */
+async function viewLog() {
+  chrome(T('log_title'), T('log_sub'), true);
+  const app = $('#app');
+  app.innerHTML = `<div class="empty">${T('loading')}</div>`;
+  let H = [];
+  try { H = await api('history?n=300'); }
+  catch (e) { app.innerHTML = `<div class="empty">${T('no_offline')}</div>`; return; }
+
+  if (!H.length) { app.innerHTML = `<div class="empty">${T('log_empty')}</div>`; return; }
+
+  const dt = (iso) => {
+    const d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleString(loc(), { day: '2-digit', month: '2-digit', year: '2-digit',
+      hour: '2-digit', minute: '2-digit' });
+  };
+  const byDay = {};
+  for (const x of H) {
+    const d = new Date(x.ts);
+    const key = isNaN(d) ? '—' : d.toLocaleDateString(loc(), { day: '2-digit', month: '2-digit', year: 'numeric' });
+    (byDay[key] = byDay[key] || []).push(x);
+  }
+
+  const row = (x) => {
+    const isHours = x.what === 'hours', isPlan = x.what === 'plan';
+    const delta = (x.after != null && x.before != null) ? Math.round((x.after - x.before) * 10) / 10 : null;
+    const tag = isHours ? T('log_tag_hours') : isPlan ? T('log_tag_plan') : T('log_tag_line');
+    const unit = isHours ? T('c_h') : isPlan ? T('c_h') : '%';
+    return `<div class="logrow${isHours ? ' h' : isPlan ? ' p' : ''}">
+      <div class="lg1">
+        <span class="badge ${isHours || isPlan ? 'p' : 'k'}">${tag}</span>
+        ${isPlan ? '' : `<b>${esc(x.short || x.line)}</b>`}
+        <span class="mono small muted">${dt(x.ts)}</span>
+      </div>
+      <div class="lg2">
+        <span class="who">${esc(x.user || '—')}</span>
+        ${x.after != null ? `<span class="mono">${x.before != null ? n1(x.before) + ' → ' : ''}<b>${n1(x.after)}</b> ${unit}${
+          delta ? ` <span style="color:${delta > 0 ? 'var(--ok)' : 'var(--acc)'}">${delta > 0 ? '+' : ''}${n1(delta)}</span>` : ''}</span>` : ''}
+      </div>
+    </div>`;
+  };
+
+  app.innerHTML = `
+    <div class="small muted mb" style="padding:0 2px">${T('log_hint', { n: H.length })}</div>
+    ${Object.keys(byDay).map((d) => `<div class="card pad mb">
+      <div class="spread mb"><b>${d}</b><span class="small muted">${T('log_changes', { n: byDay[d].length })}</span></div>
+      ${byDay[d].map(row).join('')}
+    </div>`).join('')}
+    <div class="btns noprint" style="margin-bottom:20px">
+      <button class="btn" data-go="#/">${T('nav_home')}</button>
+      <button class="btn" id="logcsv">${T('hrs_csv')}</button>
+      <button class="btn" onclick="window.print()">${T('hrs_print')}</button>
+    </div>`;
+
+  $('#logcsv').addEventListener('click', () => {
+    const rows = [[T('log_when'), T('log_who'), T('log_what'), T('log_obj'), T('log_before'), T('log_after')]];
+    for (const x of H) rows.push([x.ts, x.user || '', x.what || 'line', x.short || x.line,
+      x.before == null ? '' : x.before, x.after == null ? '' : x.after]);
+    dl('TESA_log.csv', '\ufeff' + rows.map((r) => r.join(';')).join('\n'));
   });
 }
 
@@ -839,6 +1358,11 @@ async function render() {
   window.scrollTo(0, 0);
   if (h.startsWith('#/line/')) return viewLine(decodeURIComponent(h.slice(7)));
   if (h.startsWith('#/list')) return viewList();
+  if (h.startsWith('#/log')) return viewLog();
+  if (h.startsWith('#/hours')) {
+    if (!(ME && isMgr(ME))) { toast(T('hrs_only_foreman'), 2600); location.hash = '#/'; return viewHome(); }
+    return viewHours();
+  }
   if (h.startsWith('#/report')) return viewReport();
   return viewHome();
 }
@@ -848,7 +1372,7 @@ document.addEventListener('click', (e) => {
   if (lb) {
     e.preventDefault();
     I18N.lang = lb.dataset.lang;
-    applyNavLabels();
+    applyNavLabels(); applyHU();
     DETAIL = DETAIL; render();
     return;
   }
@@ -865,5 +1389,7 @@ $('#back').addEventListener('click', () => history.length > 1 ? history.back() :
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 applyNavLabels();
+applyHU();
+loadBrand();
 render();
 })();

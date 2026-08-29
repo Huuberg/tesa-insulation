@@ -1,14 +1,6 @@
 [
- {
-  "id": "foreman",
-  "name": "Foreman",
-  "pin": "2468",
-  "role": "foreman"
- },
- {
-  "id": "viewer",
-  "name": "Viewer",
-  "pin": "1357",
-  "role": "viewer"
- }
+ { "id": "manager",  "name": "Manager 1", "pin": "2468", "role": "manager" },
+ { "id": "manager2", "name": "Manager 2", "pin": "2469", "role": "manager" },
+ { "id": "manager3", "name": "Manager 3", "pin": "2470", "role": "manager" },
+ { "id": "viewer",   "name": "Viewer",    "pin": "1357", "role": "viewer"  }
 ]

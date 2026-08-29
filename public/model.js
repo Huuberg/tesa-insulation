@@ -1,144 +1,235 @@
 'use strict';
-/* Модель готовности Tervasaari PM5.
+/* Модель готовности Tervasaari PM5 — версия 2 (учёт по объёмам работ).
+
    Готовность отмечается ОТДЕЛЬНО ПО КАЖДОЙ ВЕТКЕ линии (свой типоразмер трубы).
-   Готовность линии = средневзвешенная по объёму работ веток. */
+
+   Позиции и веса:
+     1. Материалы на месте   —  5%  — ручной ввод %
+     2. Изоляция (вата)      — 30%  — метры (ввод) + отводы (чек-боксы)
+     3. Металлопокрытие      — 40%  — метры + отводы + чемоданы (чек-боксы)
+     4. Отделка              — 23%  — ручной ввод %
+     5. Приёмка              —  2%  — 50 / 100
+
+   Внутри позиции работа считается не «на глаз», а по трудоёмкости:
+     — отвод приравнен к 1,5 м прямой трубы;
+     — чемодан = 1,5 часа, переведённые в метровый эквивалент этой ветки;
+     — на тонких трубах производительность ниже: коэффициент по DN.
+
+   Нормо-часы откалиброваны так, чтобы весь проект давал бюджет 1249 ч. */
+
+const MODEL_VERSION = 2;
 
 const STAGES = [
-  { key: 'release',    title: 'Release',    weight: 1,  kind: 'single',
-    ru: 'Выдача под изоляцию', en: 'released for insulation', et: 'väljastatud isoleerimiseks' },
-  { key: 'materials',  title: 'Materials',  weight: 1,  kind: 'levels',
-    ru: 'Материалы на месте',  en: 'materials on site',       et: 'materjalid kohal' },
-  { key: 'insulation', title: 'Insulation', weight: 40, kind: 'levels',
-    ru: 'Изоляция (вата)',     en: 'mineral wool',            et: 'isolatsioon (vill)' },
-  { key: 'cladding',   title: 'Cladding',   weight: 40, kind: 'levels',
-    ru: 'Металлопокрытие',     en: 'metal cladding',          et: 'plekikate' },
-  { key: 'finishing',  title: 'Finishing',  weight: 15, kind: 'levels',
-    ru: 'Отделка',             en: 'finishing',               et: 'viimistlus' },
-  { key: 'inspection', title: 'Inspection', weight: 3,  kind: 'insp',
-    ru: 'Приёмка',             en: 'inspection',              et: 'vastuvõtt' },
+  { key: 'materials',  title: 'Materials',  weight: 5,  kind: 'pct',
+    ru: 'Материалы на месте',  en: 'materials on site', et: 'materjalid kohal' },
+  { key: 'insulation', title: 'Insulation', weight: 30, kind: 'qty',
+    ru: 'Изоляция (вата)',     en: 'mineral wool',      et: 'isolatsioon (vill)' },
+  { key: 'cladding',   title: 'Cladding',   weight: 40, kind: 'qty',
+    ru: 'Металлопокрытие',     en: 'metal cladding',    et: 'plekikate' },
+  { key: 'finishing',  title: 'Finishing',  weight: 23, kind: 'pct',
+    ru: 'Отделка',             en: 'finishing',         et: 'viimistlus' },
+  { key: 'inspection', title: 'Inspection', weight: 2,  kind: 'insp',
+    ru: 'Приёмка',             en: 'inspection',        et: 'vastuvõtt' },
 ];
 
-const LEVEL_STAGES = STAGES.filter((s) => s.kind === 'levels').map((s) => s.key);
-const LEVELS = [5, 25, 75, 100];       // чек-боксы позиций
-const INSP_LEVELS = [50, 100];         // чек-боксы приёмки
+const INSP_LEVELS = [50, 100];
+const QTY_STAGES = ['insulation', 'cladding'];
+const PCT_STAGES = ['materials', 'finishing'];
 
-function branches(line) {
-  const b = (line && line.branches) || [];
-  return b.length ? b : [{ id: 'all', label: '—', work: 1 }];
+/* ---------- нормы трудоёмкости ---------- */
+const ELBOW_EQ = 1.5;    // отвод = 1,5 м прямой трубы
+const BOX_HOURS = 1.5;   // один чемодан
+const HPM_INS = 0.25069;  // ч на 1 м² приведённой площади — вата
+const HPM_CLAD = 0.24995; // то же для металла (чемоданы считаются отдельно)
+
+/** Коэффициент производительности: на тонких трубах м² даются медленнее. */
+function dnK(dn) {
+  const d = +dn || 0;
+  if (d <= 50) return 1.8;
+  if (d <= 150) return 1.25;
+  return 1.0;
 }
 
-/** Доли веток в готовности линии — по расчётному объёму работ. */
+const devM = (b) => (+b.dev || 0) / 1000;
+
+/** База метров ветки: прямая труба, а если её нет — вся длина ветки (только арматура). */
+function metreBase(b) {
+  const st = +b.straight_m || 0;
+  if (st > 0) return st;
+  const len = +b.length_m || 0;
+  return len > 0 ? Math.round(len * 10) / 10 : 0;
+}
+
+/** Метровый эквивалент одного чемодана на этой ветке. */
+function boxEqM(b) {
+  const base = devM(b) * dnK(b.dn) * HPM_CLAD;
+  return base > 0 ? BOX_HOURS / base : 6;
+}
+
+/** Объём работ ветки в «метрах трубы»: прямые + отводы (+ чемоданы для металла). */
+function unitsOf(b, withBoxes) {
+  const u = metreBase(b) + ELBOW_EQ * (+b.elbows || 0);
+  return withBoxes ? u + boxEqM(b) * (+b.cases || 0) : u;
+}
+
+/** Нормо-часы ветки по позициям и всего. */
+function branchHours(b) {
+  const q = devM(b) * dnK(b.dn);
+  const ins = unitsOf(b, false) * q * HPM_INS;
+  const clad = unitsOf(b, false) * q * HPM_CLAD + BOX_HOURS * (+b.cases || 0);
+  const rest = (ins + clad) * (5 + 23 + 2) / (30 + 40);
+  return { ins: r2(ins), clad: r2(clad), rest: r2(rest), total: r2(ins + clad + rest) };
+}
+
+function lineHours(line) {
+  let t = 0;
+  for (const b of branches(line)) t += branchHours(b).total;
+  return r2(t);
+}
+
+const r2 = (x) => Math.round(x * 100) / 100;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const num = (v) => { const n = +v; return isFinite(n) ? n : 0; };
+
+/* ---------- ветки ---------- */
+function branches(line) {
+  const bs = (line && line.branches) || [];
+  if (bs.length) return bs;
+  return [{
+    id: 'main', label: 'main', dn: line && line.dn, dev: (line && line.dev) || 0,
+    straight_m: (line && line.straight_m) || 0, elbows: (line && line.elbows) || 0,
+    cases: (line && line.cases) || 0,
+  }];
+}
+
+/** Доли веток внутри линии — по нормо-часам. */
 function branchWeights(line) {
   const bs = branches(line);
-  let sum = 0;
-  for (const b of bs) sum += Math.max(0, b.work || 0);
-  const w = {};
-  if (sum <= 0) { for (const b of bs) w[b.id] = 1 / bs.length; return w; }
-  for (const b of bs) w[b.id] = Math.max(0, b.work || 0) / sum;
-  return w;
+  const h = bs.map((b) => Math.max(0.01, branchHours(b).total));
+  const sum = h.reduce((a, x) => a + x, 0) || 1;
+  const out = {};
+  bs.forEach((b, i) => { out[b.id] = h[i] / sum; });
+  return out;
 }
 
+/* ---------- пустые отметки ---------- */
 function emptyBranchChecks() {
-  const c = { release: { done: false }, inspection: { levels: [] } };
-  for (const k of LEVEL_STAGES) c[k] = [];
-  return c;
+  return {
+    materials: 0,
+    insulation: { m: 0, el: [] },
+    cladding: { m: 0, el: [], bx: [] },
+    finishing: 0,
+    inspection: { levels: [] },
+  };
 }
 
 function emptyChecks(line) {
-  const c = { branches: {} };
-  for (const b of branches(line)) c.branches[b.id] = emptyBranchChecks();
-  return c;
+  const out = { v: MODEL_VERSION, branches: {} };
+  for (const b of branches(line)) out.branches[b.id] = emptyBranchChecks();
+  return out;
 }
 
-/** Старый формат (до веток): позиции на всю линию с подпозициями отводы/прямой/отделка/чемоданы. */
-function migrateLegacy(input, line) {
-  const c = emptyChecks(line);
-  const pick = (v) => (Array.isArray(v) ? LEVELS.filter((lv) => v.includes(lv)) : []);
-  const base = {
-    release: !!(input.release && input.release.done),
-    materials: pick(input.materials && input.materials.pipe),
-    insulation: pick(input.insulation && input.insulation.pipe),
-    cladding: pick(input.cladding && input.cladding.pipe),
-    // «отделка» была подпозицией — теперь это отдельная позиция Finishing
-    finishing: pick((input.cladding && input.cladding.fin) || (input.insulation && input.insulation.fin)),
-    inspection: INSP_LEVELS.filter((lv) =>
-      Array.isArray(input.inspection && input.inspection.levels) && input.inspection.levels.includes(lv)),
+/* ---------- приведение к формату ---------- */
+function sanitizeBranch(src, b) {
+  const c = emptyBranchChecks();
+  if (!src || typeof src !== 'object') return c;
+  const maxM = metreBase(b);
+  const maxE = +b.elbows || 0;
+  const maxB = +b.cases || 0;
+
+  c.materials = Math.round(clamp(num(src.materials), 0, 100) * 10) / 10;
+  c.finishing = Math.round(clamp(num(src.finishing), 0, 100) * 10) / 10;
+
+  const qty = (s, withBoxes) => {
+    const o = { m: 0, el: [], bx: [] };
+    if (!s || typeof s !== 'object') return o;
+    o.m = Math.round(clamp(num(s.m), 0, maxM) * 10) / 10;
+    const el = Array.isArray(s.el) ? s.el : [];
+    o.el = [...new Set(el.map((x) => Math.floor(num(x))).filter((x) => x >= 0 && x < maxE))].sort((a, z) => a - z);
+    if (withBoxes) {
+      const bx = Array.isArray(s.bx) ? s.bx : [];
+      o.bx = [...new Set(bx.map((x) => String(x)).filter((x) => x))].slice(0, Math.max(0, maxB));
+    } else delete o.bx;
+    return o;
   };
-  for (const id of Object.keys(c.branches)) {
-    const t = c.branches[id];
-    t.release.done = base.release;
-    t.inspection.levels = base.inspection.slice();
-    for (const k of LEVEL_STAGES) t[k] = (base[k] || []).slice();
-  }
+  c.insulation = qty(src.insulation, false);
+  c.cladding = qty(src.cladding, true);
+
+  const lv = (src.inspection && Array.isArray(src.inspection.levels)) ? src.inspection.levels : [];
+  c.inspection = { levels: INSP_LEVELS.filter((x) => lv.map(Number).includes(x)) };
   return c;
 }
 
-/** Нормализация присланного клиентом объекта (защита от мусора и старого формата). */
+/** Приводит присланные отметки к текущей модели. Старый формат (v1) не переносится. */
 function sanitize(input, line) {
-  if (input && !input.branches && (input.release || input.insulation || input.cladding))
-    return migrateLegacy(input, line);
-  const c = emptyChecks(line);
+  const out = emptyChecks(line);
   const src = (input && input.branches) || {};
-  for (const id of Object.keys(c.branches)) {
-    const s = src[id] || {};
-    const t = c.branches[id];
-    t.release.done = !!(s.release && s.release.done);
-    const il = (s.inspection && s.inspection.levels) || [];
-    t.inspection.levels = INSP_LEVELS.filter((lv) => Array.isArray(il) && il.includes(lv));
-    for (const k of LEVEL_STAGES) {
-      const arr = Array.isArray(s[k]) ? s[k] : [];
-      t[k] = LEVELS.filter((lv) => arr.includes(lv));
-    }
-  }
-  return c;
+  for (const b of branches(line)) out.branches[b.id] = sanitizeBranch(src[b.id], b);
+  return out;
 }
 
-/** % позиции внутри одной ветки. */
-function branchStagePercent(checks, branchId, stage) {
-  const st = STAGES.find((s) => s.key === stage);
-  if (!st) return 0;
-  const bc = (checks && checks.branches && checks.branches[branchId]) || null;
-  if (!bc) return 0;
-  if (st.kind === 'single') return bc.release && bc.release.done ? 100 : 0;
-  if (st.kind === 'insp') {
-    const arr = (bc.inspection && bc.inspection.levels) || [];
-    let p = 0;
-    for (const lv of INSP_LEVELS) if (arr.includes(lv)) p = Math.max(p, lv);
-    return p;
+/* ---------- проценты ---------- */
+function branchStagePercent(checks, branchId, stageKey, line) {
+  const b = branches(line).find((x) => x.id === branchId)
+         || { straight_m: 0, elbows: 0, cases: 0, dev: 0, dn: 0 };
+  const c = (checks && checks.branches && checks.branches[branchId]) || emptyBranchChecks();
+
+  if (stageKey === 'materials') return clamp(num(c.materials), 0, 100);
+  if (stageKey === 'finishing') return clamp(num(c.finishing), 0, 100);
+  if (stageKey === 'inspection') {
+    const lv = (c.inspection && c.inspection.levels) || [];
+    return lv.length ? Math.max(...lv) : 0;
   }
-  const arr = bc[stage] || [];
+  const withBoxes = stageKey === 'cladding';
+  const total = unitsOf(b, withBoxes);
+  if (total <= 0) return 0;
+  const s = c[stageKey] || {};
+  let done = clamp(num(s.m), 0, metreBase(b)) + ELBOW_EQ * ((s.el || []).length);
+  if (withBoxes) done += boxEqM(b) * ((s.bx || []).length);
+  return clamp((done / total) * 100, 0, 100);
+}
+
+function branchPercent(checks, branchId, line) {
   let p = 0;
-  for (const lv of LEVELS) if (arr.includes(lv)) p = Math.max(p, lv);
+  for (const s of STAGES) p += s.weight * branchStagePercent(checks, branchId, s.key, line) / 100;
   return p;
 }
 
-/** Общая готовность одной ветки, %. */
-function branchPercent(checks, branchId) {
-  let t = 0;
-  for (const s of STAGES) t += (s.weight / 100) * branchStagePercent(checks, branchId, s.key);
-  return t;
-}
-
-/** % позиции по всей линии — взвешенно по веткам. */
-function stagePercent(line, checks, stage) {
+/** Процент позиции по линии — средневзвешенно по долям веток. */
+function stagePercent(line, checks, stageKey) {
   const w = branchWeights(line);
   let p = 0;
-  for (const b of branches(line)) p += w[b.id] * branchStagePercent(checks, b.id, stage);
+  for (const b of branches(line)) p += w[b.id] * branchStagePercent(checks, b.id, stageKey, line);
   return p;
 }
 
-/** Готовность линии, % (веса 1/1/40/40/15/3). */
 function linePercent(line, checks) {
   const w = branchWeights(line);
   let p = 0;
-  for (const b of branches(line)) p += w[b.id] * branchPercent(checks, b.id);
+  for (const b of branches(line)) p += w[b.id] * branchPercent(checks, b.id, line);
   return p;
+}
+
+/** Освоенные нормо-часы линии (для отчёта и прогноза). */
+function lineEarnedHours(line, checks) {
+  let h = 0;
+  for (const b of branches(line)) {
+    const bh = branchHours(b);
+    const per = { insulation: bh.ins, cladding: bh.clad };
+    for (const s of STAGES) {
+      const base = per[s.key] != null ? per[s.key] : bh.rest * (s.weight / (5 + 23 + 2));
+      h += base * branchStagePercent(checks, b.id, s.key, line) / 100;
+    }
+  }
+  return r2(h);
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    STAGES, LEVELS, INSP_LEVELS, LEVEL_STAGES,
-    branches, branchWeights, emptyChecks, emptyBranchChecks, sanitize,
-    branchStagePercent, branchPercent, stagePercent, linePercent, migrateLegacy,
+    MODEL_VERSION, STAGES, INSP_LEVELS, QTY_STAGES, PCT_STAGES,
+    ELBOW_EQ, BOX_HOURS, HPM_INS, HPM_CLAD, dnK, boxEqM, unitsOf, metreBase,
+    branches, branchWeights, branchHours, lineHours, lineEarnedHours,
+    emptyChecks, emptyBranchChecks, sanitize,
+    branchStagePercent, branchPercent, stagePercent, linePercent,
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "tesa-insulation",
-  "version": "1.9.1",
+  "version": "2.0.1",
   "private": true,
   "description": "Tervasaari PM5 — управление и отчётность о готовности изоляции трубопроводов",
   "main": "server.js",
