@@ -115,6 +115,7 @@ function branchWeights(line) {
 /* ---------- пустые отметки ---------- */
 function emptyBranchChecks() {
   return {
+    release: 0,
     materials: 0,
     insulation: { m: 0, el: [] },
     cladding: { m: 0, el: [], bx: [] },
@@ -137,6 +138,7 @@ function sanitizeBranch(src, b) {
   const maxE = +b.elbows || 0;
   const maxB = +b.cases || 0;
 
+  c.release = Math.round(clamp(num(src.release), 0, 100) * 10) / 10;
   c.materials = Math.round(clamp(num(src.materials), 0, 100) * 10) / 10;
   c.finishing = Math.round(clamp(num(src.finishing), 0, 100) * 10) / 10;
 
@@ -166,6 +168,26 @@ function sanitize(input, line) {
   const src = (input && input.branches) || {};
   for (const b of branches(line)) out.branches[b.id] = sanitizeBranch(src[b.id], b);
   return out;
+}
+
+/* ---------- выдача под изоляцию (release) ---------- */
+/** Сколько процентов ветки выдано заказчиком под изоляцию. В готовность не входит. */
+function branchRelease(checks, branchId) {
+  const c = (checks && checks.branches && checks.branches[branchId]) || null;
+  return c ? clamp(num(c.release), 0, 100) : 0;
+}
+
+/** Выдача по линии: средневзвешенно по площади ветки (при нуле — по метрам, иначе поровну). */
+function lineRelease(line, checks) {
+  const bs = branches(line);
+  if (!bs.length) return 0;
+  let w = bs.map((b) => +b.area_m2 || 0);
+  if (w.reduce((a, x) => a + x, 0) <= 0) w = bs.map((b) => +b.length_m || 0);
+  if (w.reduce((a, x) => a + x, 0) <= 0) w = bs.map(() => 1);
+  const sum = w.reduce((a, x) => a + x, 0) || 1;
+  let p = 0;
+  bs.forEach((b, i) => { p += (w[i] / sum) * branchRelease(checks, b.id); });
+  return Math.round(p * 10) / 10;
 }
 
 /* ---------- проценты ---------- */
@@ -231,5 +253,6 @@ if (typeof module !== 'undefined' && module.exports) {
     branches, branchWeights, branchHours, lineHours, lineEarnedHours,
     emptyChecks, emptyBranchChecks, sanitize,
     branchStagePercent, branchPercent, stagePercent, linePercent,
+    branchRelease, lineRelease,
   };
 }

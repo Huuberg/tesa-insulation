@@ -382,3 +382,10 @@ nav.bot a.on{color:var(--acc)}
   background:var(--card);color:var(--ink);font-size:15px;text-align:right}
 .warnmark{color:var(--warn);font-weight:700}
 @media print{.tbl td.hcell.ed{cursor:auto}}
+
+/* выдача под изоляцию (release) */
+.pos.rel{border-left:3px solid var(--rel);background:#f6f4ff;border-radius:10px;padding-left:9px}
+.pos.rel .w.rw{background:var(--rel);color:#fff;border-color:var(--rel)}
+.bar.rel i{background:var(--rel)}
+.bar.rel.ok i{background:var(--rel)}
+.relline:empty{display:none}

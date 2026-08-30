@@ -150,9 +150,9 @@ function applyQueue(lines) {
 /* ---------------- визуальные элементы ---------------- */
 function pctColor(p) { return p >= 100 ? 'var(--ok)' : p > 0 ? 'var(--acc)' : 'var(--ink3)'; }
 
-function bar(p) {
+function bar(p, kind) {
   const v = Math.max(0, Math.min(100, p));
-  return `<div class="bar${v >= 100 ? ' ok' : ''}"><i style="width:${v}%"></i></div>`;
+  return `<div class="bar${v >= 100 ? ' ok' : ''}${kind ? ' ' + kind : ''}"><i style="width:${v}%"></i></div>`;
 }
 
 function stageSeg(st) {
@@ -409,7 +409,7 @@ async function viewLine(id) {
         <div class="fullnm mono">${esc(L.name)} · ${esc(L.oper_temp || '')} / ${esc(L.design_temp || '')}${L.partial ? ` · <span class="badge p">${T('partial_ins')}</span>` : ''}</div>
         <div class="dims mono">${L.pipe_od ? n0(L.pipe_od) : '—'} <em>/</em> ${L.ins ? n0(L.ins) : '—'} <em>/</em> ${L.clad_od ? n0(L.clad_od) : '—'} <em>${T('mm')}</em></div>
         <div class="devel mono">${T('developed')} <b>${n0(L.dev)} ${T('mm')}</b></div>
-        ${L.release_date || L.release_note ? `<div class="small" style="margin-top:5px;color:var(--rel)">${T('rel_from_reg')}: <b>${esc(L.release_date ? dLabelFull(L.release_date) : L.release_note)}</b>${L.release_pct != null ? ` · ${n1(L.release_pct)}%` : ''}${L.release_date && L.release_note ? ' · ' + esc(L.release_note) : ''}</div>` : ''}
+        <div class="small relline" id="relline" style="margin-top:5px;color:var(--rel)"></div>
         <div class="small muted" style="margin-top:5px">${T('cladding_mat')} ${esc((L.al || []).join(', ') || '—')}${multi ? ` · ${T('branches_on_line')} <b>${BR.length}</b>` : ''}</div>
         ${L.drawing ? `<a class="dwg" href="drawings/${encodeURIComponent(L.drawing)}" target="_blank" rel="noopener">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
@@ -519,6 +519,25 @@ async function viewLine(id) {
           ${canEdit ? '' : 'disabled'} title="${esc(it.t || '')}">${esc(it.l)}</button>`;
       }).join('')}</div>`;
 
+      const rel = branchRelease(checks, b.id);
+      const relBlock = `<div class="pos rel">
+          <div class="ph">
+            <span class="w mono rw">R</span>
+            <span class="t"><b>Release</b> <i>${T('rel_sub')}</i></span>
+            ${multi && canEdit ? `<button class="allbtn" data-relall="1" data-from="${b.id}" title="${T('to_all_t')}">${T('to_all')}</button>` : ''}
+            <span class="p mono" style="color:${rel > 0 ? 'var(--rel)' : 'var(--ink3)'}">${n1(rel)}%</span>
+          </div>
+          <div class="inrow">
+            <input class="numin" type="number" inputmode="decimal" min="0" max="100" step="5" value="${rel || ''}"
+              data-b="${b.id}" data-rel="1" placeholder="0" ${canEdit ? '' : 'disabled'}>
+            <span class="unit">%</span>
+            ${canEdit ? `<span class="quick">
+              <button class="btn sm" data-b="${b.id}" data-relset="50">50</button>
+              <button class="btn sm" data-b="${b.id}" data-relset="100">100</button>
+              <button class="btn sm" data-b="${b.id}" data-relset="0">0</button></span>` : ''}
+          </div>
+        </div>`;
+
       const body = STAGES.map((s) => {
         const p = branchStagePercent(checks, b.id, s.key, L);
         let ctrl = '';
@@ -586,6 +605,7 @@ async function viewLine(id) {
         <div class="bbar">${bar(bp)}</div>
         <div class="bd">
           <div class="binfo">${info.map(([k, v]) => `<div><b class="mono">${v}</b><span>${k}</span></div>`).join('')}</div>
+          ${relBlock}
           ${body}
         </div>
       </div>`;
@@ -598,6 +618,7 @@ async function viewLine(id) {
     $('#upd').style.color = dirty ? 'var(--acc)' : '';
   }
   drawBranches();
+  relTotal();
 
   if (multi) $('#expall').addEventListener('click', () => {
     const any = !BR.every((b) => OPEN[b.id]);
@@ -613,13 +634,21 @@ async function viewLine(id) {
     const bc = checks.branches[i.dataset.b];
     if (!bc) return;
     const v = Math.max(0, +i.value || 0);
-    if (i.dataset.pct) bc[i.dataset.pct] = Math.min(100, v);
+    if (i.dataset.rel) bc.release = Math.min(100, v);
+    else if (i.dataset.pct) bc[i.dataset.pct] = Math.min(100, v);
     else if (i.dataset.m) {
       const b = BR.find((x) => x.id === i.dataset.b) || {};
       bc[i.dataset.m].m = Math.min(v, metreBase(b));
     }
     dirty = true;
     const pos = i.closest('.pos');
+    if (i.dataset.rel) {
+      const el3 = pos && pos.querySelector('.p');
+      if (el3) { el3.textContent = n1(bc.release) + '%'; el3.style.color = bc.release > 0 ? 'var(--rel)' : 'var(--ink3)'; }
+      relTotal();
+      $('#upd').textContent = T('not_saved'); $('#upd').style.color = 'var(--acc)';
+      return;
+    }
     const key = i.dataset.pct || i.dataset.m;
     if (pos) {
       const p = branchStagePercent(checks, i.dataset.b, key, L);
@@ -627,6 +656,16 @@ async function viewLine(id) {
     }
     liveTotals();
   });
+
+  /** Обновляет строку «выдано под изоляцию» в шапке линии. */
+  function relTotal() {
+    const el4 = $('#relline');
+    if (!el4) return;
+    const r = lineRelease(L, checks);
+    el4.innerHTML = `${T('rel_line')}: <b>${n1(r)}%</b>`
+      + (L.release_note || L.release_date ? ` <span class="muted">· ${T('rel_reg')}: ${esc(L.release_date ? dLabelFull(L.release_date) : L.release_note)}</span>` : '');
+    el4.style.opacity = r > 0 ? 1 : 0.65;
+  }
 
   function liveTotals() {
     const tot = linePercent(L, checks);
@@ -646,6 +685,14 @@ async function viewLine(id) {
     const bh = e.target.closest('.bh');
     if (bh) { const id2 = bh.parentElement.dataset.id; OPEN[id2] = !OPEN[id2]; drawBranches(); return; }
     const btn = e.target.closest('button'); if (!btn || !canEdit) return;
+
+    // «всем» для выдачи под изоляцию
+    if (btn.dataset.relall) {
+      const v = checks.branches[btn.dataset.from].release;
+      for (const b of BR) checks.branches[b.id].release = v;
+      dirty = true; drawBranches(); relTotal(); toast(T('applied_all'));
+      return;
+    }
 
     // «всем» — скопировать позицию на все ветки линии
     if (btn.dataset.all) {
@@ -678,7 +725,8 @@ async function viewLine(id) {
     const bc = checks.branches[btn.dataset.b];
     if (!bc) return;
 
-    if (btn.dataset.set) { bc[btn.dataset.set] = +btn.dataset.v; }
+    if (btn.dataset.relset != null) { bc.release = +btn.dataset.relset; }
+    else if (btn.dataset.set) { bc[btn.dataset.set] = +btn.dataset.v; }
     else if (btn.dataset.mall) {
       const b = BR.find((x) => x.id === btn.dataset.b) || {};
       const st = bc[btn.dataset.mall];
@@ -747,6 +795,7 @@ function viewList() {
     ['cases', T('h_cases'), (l) => n0(l.cases)],
     ['length_m', T('h_len'), (l) => n1(l.length_m)],
     ['area_m2', T('h_area'), (l) => n1(l.area_m2)],
+    ['release', 'R', (l) => (l.release ? `<span style="color:var(--rel)">${n1(l.release)}</span>` : '·')],
     ['percent', T('h_pct'), (l) => `<b style="color:${pctColor(l.percent)}">${n1(l.percent)}</b>`],
   ];
   const rows = LINES.slice().sort((a, b) => {
@@ -843,6 +892,16 @@ async function viewReport() {
     </div>
 
     <div class="card pad mb">
+      <div class="spread mb"><b>${T('rel_title')}</b>
+        <span class="small muted">${T('rel_lines_n', { a: TT.released_100 || 0, b: TT.released || 0, t: TT.lines })}</span></div>
+      <div class="dual" style="margin-top:6px"><span class="lab">${T('c_m2')}</span>${bar(TT.release_a || 0, 'rel')}<span class="mono small" style="width:52px;text-align:right">${n1(TT.release_a || 0)}%</span></div>
+      <div class="dual" style="margin-top:4px"><span class="lab">${T('c_m')}</span>${bar(TT.release_m || 0, 'rel')}<span class="mono small" style="width:52px;text-align:right">${n1(TT.release_m || 0)}%</span></div>
+      <div class="small muted" style="margin-top:7px">${T('rel_hint', {
+        a: n1(TT.area_m2 * (TT.release_a || 0) / 100), b: n1(TT.area_m2),
+        m: n1(TT.length_m * (TT.release_m || 0) / 100), n: n1(TT.length_m) })}</div>
+    </div>
+
+    <div class="card pad mb">
       <div class="spread mb"><b>${T('positions')}</b><span class="small muted">${T('area_len')}</span></div>
       ${R.stages.map(srow).join('')}
     </div>
@@ -850,12 +909,13 @@ async function viewReport() {
     <div class="card mb">
       <div class="pad spread"><b>${T('by_lines')}</b><span class="small muted">${T('pcs', { n: R.lines.length })}</span></div>
       <div class="scrollx"><table class="tbl">
-        <thead><tr><th>${T('h_line')}</th><th>${T('h_branches')}</th><th>${T('c_m')}</th><th>${T('c_m2')}</th><th>${T('h_mat')}</th><th>${T('h_ins')}</th><th>${T('h_clad')}</th><th>${T('h_fin')}</th><th>${T('h_insp')}</th><th>${T('h_pct')}</th></tr></thead>
+        <thead><tr><th>${T('h_line')}</th><th>${T('h_branches')}</th><th>${T('c_m')}</th><th>${T('c_m2')}</th><th>R</th><th>${T('h_mat')}</th><th>${T('h_ins')}</th><th>${T('h_clad')}</th><th>${T('h_fin')}</th><th>${T('h_insp')}</th><th>${T('h_pct')}</th></tr></thead>
         <tbody>${R.lines.slice().sort((a, b) => b.percent - a.percent || a.name.localeCompare(b.name)).map((l) => `
           <tr data-go="#/line/${l.id}" style="cursor:pointer">
             <td>${esc(l.short)}</td>
             <td class="mono">${l.branch_count || 1}</td>
             <td class="mono">${n1(l.length_m)}</td><td class="mono">${n1(l.area_m2)}</td>
+            <td class="mono" style="color:var(--rel)">${l.release ? n1(l.release) : '·'}</td>
             <td class="mono">${n1(l.stages.materials)}</td>
             <td class="mono">${n1(l.stages.insulation)}</td>
             <td class="mono">${n1(l.stages.cladding)}</td>
@@ -867,6 +927,7 @@ async function viewReport() {
           <td>${T('h_total')}</td>
           <td class="mono">${R.lines.reduce((a, l) => a + (l.branch_count || 1), 0)}</td>
           <td class="mono">${n1(TT.length_m)}</td><td class="mono">${n1(TT.area_m2)}</td>
+          <td class="mono" style="color:var(--rel)">${n1(TT.release_a || 0)}</td>
           ${['materials', 'insulation', 'cladding', 'finishing', 'inspection'].map((k) => {
             const s = R.stages.find((x) => x.key === k); return `<td class="mono">${n1(s.percent_a)}</td>`;
           }).join('')}
@@ -886,9 +947,9 @@ async function viewReport() {
 
   $('#pdf').addEventListener('click', () => window.print());
   $('#csv').addEventListener('click', () => {
-    const head = [T('h_line'), T('h_branches'), T('h_len'), T('h_area'), 'Materials',
+    const head = [T('h_line'), T('h_branches'), T('h_len'), T('h_area'), 'Release', 'Materials',
       'Insulation', 'Cladding', 'Finishing', 'Inspection', T('h_pct')].join(';');
-    const body = R.lines.map((l) => [l.short, l.branch_count || 1, l.length_m, l.area_m2, l.stages.materials, l.stages.insulation, l.stages.cladding, l.stages.finishing, l.stages.inspection, l.percent].join(';')).join('\n');
+    const body = R.lines.map((l) => [l.short, l.branch_count || 1, l.length_m, l.area_m2, l.release || 0, l.stages.materials, l.stages.insulation, l.stages.cladding, l.stages.finishing, l.stages.inspection, l.percent].join(';')).join('\n');
     dl('TESA_progress_report.csv', '﻿' + head + '\n' + body, 'text/csv');
   });
   $('#json').addEventListener('click', async () => {
