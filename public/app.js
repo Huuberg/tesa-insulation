@@ -929,6 +929,8 @@ function roleMenu() {
       </div>
     </div>
     <button class="btn wide" id="log" style="margin-top:10px">${T('log_title')}</button>
+    ${canEdit ? `<button class="btn wide" id="outall" style="margin-top:8px">${T('logout_all')}</button>
+    <div class="small muted" style="margin-top:4px">${T('logout_all_hint')}</div>` : ''}
     <button class="btn wide" id="out" style="margin-top:8px">${T('switch_user')}</button>
   </div></div>`);
   document.body.appendChild(box);
@@ -978,6 +980,17 @@ function roleMenu() {
   });
 
   $('#log', box).addEventListener('click', () => { close(); location.hash = '#/log'; });
+
+  const oa = $('#outall', box);
+  if (oa) oa.addEventListener('click', async () => {
+    if (!confirm(T('logout_all_q'))) return;
+    oa.disabled = true;
+    try {
+      const r = await api('logout-all', { method: 'POST' });
+      toast(T('logout_all_ok', { n: r.closed || 0 }), 3200);
+    } catch (e) { toast(e.message, 3000); }
+    oa.disabled = false;
+  });
 
   $('#out', box).addEventListener('click', async () => {
     try { await api('logout', { method: 'POST' }); } catch (e) {}
