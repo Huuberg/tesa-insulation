@@ -279,6 +279,14 @@ function auth(token) {
   return s;
 }
 function logout(token) { delete sessions[token]; saveSessions(); }
+/** Завершает все входы, кроме текущего: старые пароли перестают действовать. */
+function logoutAll(keepToken) {
+  const n = Object.keys(sessions).length;
+  const keep = keepToken && sessions[keepToken] ? { [keepToken]: sessions[keepToken] } : {};
+  sessions = keep;
+  saveSessions();
+  return Math.max(0, n - Object.keys(sessions).length);
+}
 function addHistory(rec) { history.push(rec); saveHistory(); }
 
 function storageStatus() {
@@ -292,6 +300,6 @@ module.exports = {
   get state() { return state; },
   set state(v) { state = v; },
   get history() { return history; },
-  saveState, saveHistory, saveUsers, login, auth, logout, addHistory,
+  saveState, saveHistory, saveUsers, login, auth, logout, logoutAll, addHistory,
   readJSON, writeJSON: writeFileJSON,
 };

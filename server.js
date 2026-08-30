@@ -499,6 +499,17 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    // завершить входы на всех устройствах (после смены паролей)
+    if (p === '/api/logout-all' && req.method === 'POST') {
+      if (!canEdit) return json(res, 403, { error: 'Нет прав' });
+      const n = S.logoutAll(tokenOf(req));
+      S.addHistory({
+        ts: new Date().toISOString(), user: sess.name, what: 'sessions',
+        line: 'ВХОДЫ', short: 'сброс', before: n, after: 0,
+      });
+      return json(res, 200, { ok: true, closed: n });
+    }
+
     if (p === '/api/config')
       return json(res, 200, {
         stages: M.STAGES, insp: M.INSP_LEVELS, meta: S.seed.meta,
