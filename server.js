@@ -36,7 +36,9 @@ function lineSummary(l) {
     elbows: l.elbows, ties: l.ties, cones: l.cones, cases: l.cases,
     partial: l.partial, al: l.al, connect: l.connect,
     percent: pct, stages: st,
-    released: !!l.release_date, release_note: l.release_note || null,
+    release: Math.round(M.lineRelease(l, c) * 10) / 10,
+    released: M.lineRelease(l, c) > 0,
+    reg_release: !!l.release_date, release_note: l.release_note || null,
     norm_h: M.lineHours(l), earned_h: M.lineEarnedHours(l, c),
     branch_count: (l.branches || []).length,
     drawing: l.drawing || null, drawing_rev: l.drawing_rev || '',
@@ -142,7 +144,7 @@ function buildReport() {
   }
   const r1 = (x) => Math.round(x * 10) / 10;
   const stages = M.STAGES.map((s) => ({
-    key: s.key, title: s.title, ru: s.ru, weight: s.weight,
+    key: s.key, title: s.title, ru: s.ru, en: s.en, et: s.et, weight: s.weight,
     percent_m: tot.length_m ? r1(stageTot[s.key].m / tot.length_m) : 0,
     percent_a: tot.area_m2 ? r1(stageTot[s.key].a / tot.area_m2) : 0,
     done_m: r1(tot.length_m ? stageTot[s.key].m / 100 : 0),
@@ -164,7 +166,10 @@ function buildReport() {
         const e = rows.reduce((a, r) => a + (r.earned_h || 0), 0);
         return n ? r1((e / n) * 100) : 0;
       })(),
-      released: rows.filter((r) => (S.linesById.get(r.id) || {}).release_date).length,
+      released: rows.filter((r) => (r.release || 0) > 0).length,
+      released_100: rows.filter((r) => (r.release || 0) >= 99.95).length,
+      release_m: tot.length_m ? r1(rows.reduce((a, r) => a + r.length_m * (r.release || 0), 0) / tot.length_m) : 0,
+      release_a: tot.area_m2 ? r1(rows.reduce((a, r) => a + r.area_m2 * (r.release || 0), 0) / tot.area_m2) : 0,
       insulated_100: rows.filter((r) => r.stages.insulation >= 100).length,
       cladded_100: rows.filter((r) => r.stages.cladding >= 100).length,
       accepted_100: rows.filter((r) => r.stages.inspection >= 100).length,
