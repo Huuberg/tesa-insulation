@@ -1,0 +1,155 @@
+{
+ "source": "BTI Service PM5 Manpower.xlsx",
+ "crew": [
+  {
+   "name": "Devlokhov Vokhidzhon",
+   "role": "Insulator"
+  },
+  {
+   "name": "Karimov Asladin",
+   "role": "Insulator"
+  },
+  {
+   "name": "Khojaev Khujavali",
+   "role": "Insulator"
+  },
+  {
+   "name": "Khojaev Komron",
+   "role": "Insulator"
+  },
+  {
+   "name": "Khojaev Saibashir",
+   "role": "Insulator"
+  },
+  {
+   "name": "Saidamiri Saidakbar",
+   "role": "Insulator"
+  },
+  {
+   "name": "Shonimatov Makhmud",
+   "role": "Insulator"
+  },
+  {
+   "name": "Zoidov Shukhratjon",
+   "role": "Insulator"
+  },
+  {
+   "name": "Anatoli Kuteinikov",
+   "role": "SM"
+  },
+  {
+   "name": "Dzmitry Tkach",
+   "role": "Insulator"
+  },
+  {
+   "name": "Ihor Kanin",
+   "role": "Insulator"
+  },
+  {
+   "name": "Vadym Solovoniuk",
+   "role": "Insulator"
+  },
+  {
+   "name": "Silin Igor",
+   "role": "PM"
+  }
+ ],
+ "days": {
+  "2026-08-24": [
+   0,
+   2
+  ],
+  "2026-08-25": [
+   0,
+   2
+  ],
+  "2026-08-26": [
+   8,
+   2
+  ],
+  "2026-08-27": [
+   8,
+   1
+  ],
+  "2026-08-28": [
+   8,
+   1
+  ],
+  "2026-09-01": [
+   8,
+   1
+  ],
+  "2026-09-02": [
+   8,
+   1
+  ],
+  "2026-09-03": [
+   5,
+   1
+  ],
+  "2026-09-04": [
+   5,
+   1
+  ],
+  "2026-09-14": [
+   8,
+   1
+  ],
+  "2026-09-15": [
+   8,
+   1
+  ],
+  "2026-09-16": [
+   11,
+   1
+  ],
+  "2026-09-17": [
+   11,
+   1
+  ],
+  "2026-09-18": [
+   11,
+   1
+  ],
+  "2026-09-19": [
+   11,
+   1
+  ],
+  "2026-09-21": [
+   11,
+   1
+  ],
+  "2026-09-22": [
+   11,
+   1
+  ],
+  "2026-09-23": [
+   11,
+   1
+  ],
+  "2026-09-24": [
+   11,
+   1
+  ],
+  "2026-09-25": [
+   11,
+   1
+  ],
+  "2026-09-26": [
+   11,
+   1
+  ],
+  "2026-09-28": [
+   11,
+   1
+  ],
+  "2026-09-29": [
+   11,
+   1
+  ],
+  "2026-09-30": [
+   11,
+   1
+  ]
+ }
+}
