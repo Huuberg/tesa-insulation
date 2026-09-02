@@ -14,6 +14,8 @@ const USE_DRIVE = String(process.env.TESA_STORE || '').toLowerCase() === 'drive'
 const F = {
   seed:     path.join(DATA, 'seed.json'),
   hoursSeed: path.join(__dirname, 'data', 'hours-seed.json'),
+  pkgSeed: path.join(__dirname, 'data', 'packages-seed.json'),
+  manpowerSeed: path.join(__dirname, 'data', 'manpower-seed.json'),
   state:    path.join(DATA, 'state.json'),
   users:    path.join(DATA, 'users.json'),
   history:  path.join(DATA, 'history.json'),
@@ -54,6 +56,24 @@ function resetOldModel(st) {
   st.model = 2;
   if (had) console.log(`  Модель готовности обновлена до v2 — старые отметки (${had} линий) очищены`);
   return true;
+}
+
+/** План выдачи и план бригады: подставляем при первом запуске. */
+function seedPlanData(st) {
+  let changed = false;
+  if (!st.packages || !st.packages.length) {
+    const p = readJSON(F.pkgSeed, null);
+    if (p && p.packages) {
+      st.packages = p.packages;
+      st.linePkg = Object.assign({}, p.lines || {});
+      changed = true;
+    }
+  }
+  if (!st.manpower || !Object.keys(st.manpower).length) {
+    const m = readJSON(F.manpowerSeed, null);
+    if (m && m.days) { st.manpower = m.days; st.manpowerCrew = m.crew || []; changed = true; }
+  }
+  return changed;
 }
 
 /** Табель: при первом запуске подставляем начальные часы из hours-seed.json. */
@@ -193,8 +213,8 @@ const ready = (async () => {
     state = readJSON(F.state, state);
     history = readJSON(F.history, []);
     sessions = readJSON(F.sessions, {});
-    const a1 = seedHours(state), a2 = resetOldModel(state);
-    if (a1 || a2) writeFileJSON(F.state, state);
+    const a1 = seedHours(state), a2 = resetOldModel(state), a3 = seedPlanData(state);
+    if (a1 || a2 || a3) writeFileJSON(F.state, state);
     if (!fs.existsSync(F.state)) writeFileJSON(F.state, state);
     if (!fs.existsSync(F.users)) writeFileJSON(F.users, users);
     return driveState;
@@ -230,9 +250,9 @@ const ready = (async () => {
       dirty.add('state.json'); dirty.add('history.json');
       startRetryLoop();
     }
-    const s1 = seedHours(state), s2 = resetOldModel(state);
+    const s1 = seedHours(state), s2 = resetOldModel(state), s3 = seedPlanData(state);
     if (s1) console.log('  Табель: подставлены начальные часы (hours-seed.json)');
-    if (s1 || s2) saveState();
+    if (s1 || s2 || s3) saveState();
     driveState.ok = true;
     driveState.folderId = drive.folderId;
     console.log(`  Google Drive: подключён, отметок по линиям: ${Object.keys(state.lines || {}).length}`);

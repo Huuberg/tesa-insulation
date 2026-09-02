@@ -127,6 +127,71 @@ function buildHours() {
   };
 }
 
+/* ---------- план выдачи и прогноз «успеваем ли» ---------- */
+const pkgList = () => Array.isArray(S.state.packages) ? S.state.packages : [];
+const linePkg = () => (S.state.linePkg && typeof S.state.linePkg === 'object') ? S.state.linePkg : {};
+
+/** Оставшиеся нормо-часы каждой линии и дата, когда работа станет доступна. */
+function workItems() {
+  const dates = {};
+  for (const p of pkgList()) dates[p.id] = p.date || null;
+  const lp = linePkg();
+  const out = [];
+  for (const l of S.seed.lines) {
+    const c = checksOf(l);
+    const rest = Math.max(0, M.lineHours(l) - M.lineEarnedHours(l, c));
+    if (rest <= 0.01) continue;
+    const rel = M.lineRelease(l, c) / 100;
+    const pid = lp[l.num] || lp[l.id];
+    const d = pid ? (dates[pid] || null) : null;
+    if (rel >= 0.999) { out.push({ id: l.id, d: null, h: rest, now: true }); continue; }
+    if (rel > 0) out.push({ id: l.id, d: null, h: rest * rel, now: true });
+    out.push({ id: l.id, d, h: rest * (1 - rel), pkg: pid || null });
+  }
+  return out;
+}
+
+function buildPlan() {
+  const plan = H.normPlan(S.state.plan);
+  const mp = H.normManpower(S.state.manpower);
+  const today = H.today();
+  const items = workItems().map((x) => ({ d: x.now ? today : x.d, h: x.h }));
+  const fc = H.feasibility({ plan, manpower: mp, items, today });
+
+  // сводка по пакетам
+  const lp = linePkg();
+  const perPkg = {};
+  for (const p of pkgList()) perPkg[p.id] = { id: p.id, lines: 0, norm_h: 0, left_h: 0, done_pct: 0 };
+  let noPkg = { id: null, lines: 0, norm_h: 0, left_h: 0 };
+  for (const l of S.seed.lines) {
+    const c = checksOf(l);
+    const nh = M.lineHours(l), eh = M.lineEarnedHours(l, c);
+    const pid = lp[l.num] || lp[l.id];
+    const t = (pid && perPkg[pid]) ? perPkg[pid] : noPkg;
+    t.lines++; t.norm_h += nh; t.left_h += Math.max(0, nh - eh);
+  }
+  const r1 = (x) => Math.round(x * 10) / 10;
+  for (const k of Object.keys(perPkg)) {
+    const t = perPkg[k];
+    t.done_pct = t.norm_h ? r1((1 - t.left_h / t.norm_h) * 100) : 0;
+    t.norm_h = r1(t.norm_h); t.left_h = r1(t.left_h);
+  }
+  noPkg.norm_h = r1(noPkg.norm_h); noPkg.left_h = r1(noPkg.left_h);
+
+  return {
+    packages: pkgList().map((p) => Object.assign({}, p, perPkg[p.id] || {})),
+    no_pkg: noPkg,
+    lines: lp,
+    manpower: mp,
+    crew: S.state.manpowerCrew || [],
+    plan,
+    forecast: fc,
+    groups: M.DN_GROUPS,
+    updated: S.state.planUpdated || null,
+    updated_by: S.state.planBy || null,
+  };
+}
+
 function buildReport() {
   const rows = allSummaries();
   const tot = { length_m: 0, area_m2: 0, percent_m: 0, percent_a: 0 };
@@ -551,6 +616,8 @@ const server = http.createServer(async (req, res) => {
         oper_temp: l.oper_temp, design_temp: l.design_temp,
         flanges: l.flanges, valves_kot: l.valves_kot, valves_reg: l.valves_reg,
         boxes: l.boxes || [],
+        pkg: (S.state.linePkg || {})[l.num] || null,
+        packages: pkgList().map((p) => ({ id: p.id, name: p.name, date: p.date || null })),
         release_date: l.release_date || null, release_note: l.release_note || null,
         release_pct: l.release_pct == null ? null : l.release_pct,
         checks: c,
@@ -634,6 +701,78 @@ const server = http.createServer(async (req, res) => {
         before: null, after: S.state.plan.budget,
       });
       return json(res, 200, buildHours());
+    }
+
+    // план выдачи и прогноз — только менеджеру
+    if (p === '/api/plan' && req.method === 'GET') {
+      if (!canEdit) return json(res, 403, { error: 'План доступен только Manager' });
+      return json(res, 200, buildPlan());
+    }
+
+    // изменить пакет выдачи: { id, name, date, ru }
+    if (p === '/api/plan/pkg' && req.method === 'PUT') {
+      if (!canEdit) return json(res, 403, { error: 'Нет прав на изменение' });
+      const b = await body(req);
+      const id = String(b.id || '').slice(0, 12);
+      const list = Array.isArray(S.state.packages) ? S.state.packages.slice() : [];
+      const i = list.findIndex((x) => x.id === id);
+      if (i < 0) return json(res, 404, { error: 'Пакет не найден' });
+      const before = list[i].date || '—';
+      const upd = Object.assign({}, list[i]);
+      if (b.date === null || b.date === '') upd.date = null;
+      else if (b.date && H.parse(String(b.date))) upd.date = String(b.date);
+      if (b.name) upd.name = String(b.name).slice(0, 60);
+      if (b.guess === false) upd.guess = false;
+      list[i] = upd;
+      S.state.packages = list;
+      S.state.planUpdated = new Date().toISOString();
+      S.state.planBy = sess.name + (b.by ? ' · ' + String(b.by).slice(0, 40) : '');
+      await S.saveState();
+      S.addHistory({ ts: new Date().toISOString(), user: S.state.planBy, what: 'pkg',
+        line: 'ВЫДАЧА ' + upd.name, short: upd.id, before: null, after: null,
+        note: before + ' → ' + (upd.date || '—') });
+      return json(res, 200, buildPlan());
+    }
+
+    // привязать линии к пакету: { lines: ['50217', ...], pkg: 'P7'|null }
+    if (p === '/api/plan/line' && req.method === 'PUT') {
+      if (!canEdit) return json(res, 403, { error: 'Нет прав на изменение' });
+      const b = await body(req);
+      const ids = Array.isArray(b.lines) ? b.lines : (b.line ? [b.line] : []);
+      const pid = b.pkg ? String(b.pkg).slice(0, 12) : null;
+      if (pid && !pkgList().some((x) => x.id === pid)) return json(res, 400, { error: 'Неизвестный пакет' });
+      const lp = Object.assign({}, linePkg());
+      let n = 0;
+      for (const raw of ids) {
+        const l = S.linesById.get(String(raw)) || S.seed.lines.find((x) => x.num === String(raw));
+        if (!l) continue;
+        if (pid) lp[l.num] = pid; else delete lp[l.num];
+        n++;
+      }
+      S.state.linePkg = lp;
+      S.state.planUpdated = new Date().toISOString();
+      S.state.planBy = sess.name + (b.by ? ' · ' + String(b.by).slice(0, 40) : '');
+      await S.saveState();
+      S.addHistory({ ts: new Date().toISOString(), user: S.state.planBy, what: 'pkg',
+        line: 'ПАКЕТ ' + (pid || '—'), short: String(n), before: null, after: null });
+      return json(res, 200, buildPlan());
+    }
+
+    // план бригады: { day: 'ГГГГ-ММ-ДД', ins: n, oth: n }
+    if (p === '/api/plan/manpower' && req.method === 'PUT') {
+      if (!canEdit) return json(res, 403, { error: 'Нет прав на изменение' });
+      const b = await body(req);
+      const day = String(b.day || '');
+      if (!H.parse(day)) return json(res, 400, { error: 'Неверная дата' });
+      const mp = Object.assign({}, H.normManpower(S.state.manpower));
+      const ins = Math.max(0, Math.min(99, Math.round(+b.ins || 0)));
+      const oth = Math.max(0, Math.min(99, Math.round(+b.oth || 0)));
+      if (ins || oth) mp[day] = [ins, oth]; else delete mp[day];
+      S.state.manpower = mp;
+      S.state.planUpdated = new Date().toISOString();
+      S.state.planBy = sess.name;
+      await S.saveState();
+      return json(res, 200, buildPlan());
     }
 
     if (p === '/api/report' && req.method === 'GET') return json(res, 200, buildReport());

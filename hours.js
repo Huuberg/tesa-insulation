@@ -88,6 +88,93 @@
 
   const daySum = (day) => Object.keys(day || {}).reduce((a, k) => a + (+day[k] || 0), 0);
 
+  /* ---------- план бригады (Manpower Plan) ---------- */
+  /** {дата: [изоляторы, прочие]} → чистит и отбрасывает мусор. */
+  function normManpower(m) {
+    const out = {};
+    for (const date of Object.keys(m || {})) {
+      if (!parse(date)) continue;
+      const v = m[date];
+      const a = Array.isArray(v) ? v : [v, 0];
+      const ins = Math.max(0, Math.min(99, Math.round(+a[0] || 0)));
+      const oth = Math.max(0, Math.min(99, Math.round(+a[1] || 0)));
+      if (ins || oth) out[date] = [ins, oth];
+    }
+    return out;
+  }
+
+  /** Ёмкость бригады по дням: сколько человеко-часов изоляторов доступно. */
+  function capacityDays(manpower, plan, from, to) {
+    const mp = normManpower(manpower);
+    const out = [];
+    for (const d of range(from, to)) {
+      const m = mp[d];
+      const ph = dayPlan(d, plan.schedule);
+      const ins = m ? m[0] : 0;
+      const oth = m ? m[1] : 0;
+      out.push({ d, ins, oth, h: Math.round(ins * ph * 10) / 10, hAll: Math.round((ins + oth) * ph * 10) / 10 });
+    }
+    return out;
+  }
+
+  /**
+   * Успеваем ли: посуточно сводит ёмкость бригады с фронтом, который открывает выдача.
+   * o = { plan, manpower, items: [{ d: 'ГГГГ-ММ-ДД'|null, h }], today }
+   *   items — ОСТАВШИЕСЯ нормо-часы; d — когда работа станет доступна (null — даты нет).
+   */
+  function feasibility(o) {
+    const plan = normPlan(o.plan);
+    const now = o.today || today();
+    const from = parse(now) < parse(plan.start) ? plan.start : now;
+    const to = parse(plan.deadline) > parse(from) ? plan.deadline : from;
+    const items = Array.isArray(o.items) ? o.items : [];
+
+    const unlockOn = {};
+    let scheduled = 0, unscheduled = 0;
+    for (const it of items) {
+      const h = Math.max(0, +it.h || 0);
+      if (!h) continue;
+      if (!it.d || !parse(it.d)) { unscheduled += h; continue; }
+      const d = parse(it.d) < parse(from) ? from : it.d;
+      unlockOn[d] = (unlockOn[d] || 0) + h;
+      scheduled += h;
+    }
+
+    const caps = capacityDays(o.manpower, plan, from, to);
+    let backlog = 0, done = 0, idle = 0, capTotal = 0, capAll = 0;
+    let finish = null, firstIdle = null;
+    const days = [];
+    for (const c of caps) {
+      backlog += unlockOn[c.d] || 0;
+      const work = Math.min(backlog, c.h);
+      backlog -= work; done += work; capTotal += c.h; capAll += c.hAll;
+      const free = Math.round((c.h - work) * 10) / 10;
+      if (free > 0 && c.h > 0 && !firstIdle) firstIdle = c.d;
+      idle += free;
+      if (!finish && backlog <= 0.05 && done >= scheduled - 0.05 && scheduled > 0) finish = c.d;
+      days.push({ d: c.d, cap: c.h, ins: c.ins, unlock: Math.round((unlockOn[c.d] || 0) * 10) / 10,
+        done: Math.round(work * 10) / 10, idle: free, backlog: Math.round(backlog * 10) / 10 });
+    }
+
+    const left = Math.round(backlog * 10) / 10;
+    const r1 = (x) => Math.round(x * 10) / 10;
+    let verdict = 'ok';
+    if (unscheduled > 0.5) verdict = 'unknown';
+    if (left > 0.5) verdict = 'late';
+    else if (finish && parse(finish) >= parse(plan.deadline) && capTotal - done < capTotal * 0.08) verdict = 'tight';
+
+    return {
+      from, to, deadline: plan.deadline,
+      capTotal: r1(capTotal), capAll: r1(capAll),
+      work: r1(scheduled), unscheduled: r1(unscheduled), total: r1(scheduled + unscheduled),
+      done: r1(done), left, idle: r1(idle), firstIdle,
+      finish, verdict, days,
+      spare: r1(capTotal - scheduled),
+      needAfter: r1(left + unscheduled),
+    };
+  }
+
+
   function totals(hours) {
     const byDay = {}, byPerson = {};
     let spent = 0, first = null, last = null;
@@ -214,7 +301,7 @@
   }
 
   return {
-    DEFAULT_PLAN, DEFAULT_CREW,
+    DEFAULT_PLAN, DEFAULT_CREW, normManpower, capacityDays, feasibility,
     iso, parse, addDays, today, dayPlan, range,
     normPlan, normCrew, normHours, totals, summary, daySum,
   };

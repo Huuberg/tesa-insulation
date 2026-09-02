@@ -1,5 +1,5 @@
 'use strict';
-/* Модель готовности Tervasaari PM5 — версия 2 (учёт по объёмам работ).
+/* Модель готовности Tervasaari PM5 — версия 3 (нормы времени EAI rev.2).
 
    Готовность отмечается ОТДЕЛЬНО ПО КАЖДОЙ ВЕТКЕ линии (свой типоразмер трубы).
 
@@ -10,14 +10,22 @@
      4. Отделка              — 23%  — ручной ввод %
      5. Приёмка              —  2%  — 50 / 100
 
-   Внутри позиции работа считается не «на глаз», а по трудоёмкости:
-     — отвод приравнен к 1,5 м прямой трубы;
-     — чемодан = 1,5 часа, переведённые в метровый эквивалент этой ветки;
-     — на тонких трубах производительность ниже: коэффициент по DN.
+   Трудоёмкость взята из норм EAI rev.2 — часы на м² готовой изоляции,
+   по НАРУЖНОМУ диаметру трубы:
 
-   Нормо-часы откалиброваны так, чтобы весь проект давал бюджет 1249 ч. */
+     группа   OD трубы     прямые   фитинги   коэффициент
+       A      28–89        1,99     3,72         1,79
+       B      114          1,39     3,00–3,72    1,25
+       C      140–168      1,33     3,00         1,20
+       D      219–406      1,11     2,00         1,00
 
-const MODEL_VERSION = 2;
+   Фитинг стоит примерно вдвое дороже прямой трубы той же площади (FIT_K).
+   Площади прямых участков, отводов и прочих фитингов берутся из регистра
+   поштучно, а не пересчитываются из метража. Чемодан — 1,5 часа сверху.
+
+   Итог по проекту: 1275 нормо-часов на 713,5 м² (бюджет проекта — 1249 ч). */
+
+const MODEL_VERSION = 3;
 
 const STAGES = [
   { key: 'materials',  title: 'Materials',  weight: 5,  kind: 'pct',
@@ -29,30 +37,77 @@ const STAGES = [
   { key: 'finishing',  title: 'Finishing',  weight: 23, kind: 'pct',
     ru: 'Отделка',             en: 'finishing',         et: 'viimistlus' },
   { key: 'inspection', title: 'Inspection', weight: 2,  kind: 'insp',
-    ru: 'Приёмка',             en: 'inspection',        et: 'vastuvõtt' },
+    ru: 'Приёмка',             en: 'vastuvõtt',         et: 'vastuvõtt' },
 ];
 
 const INSP_LEVELS = [50, 100];
 const QTY_STAGES = ['insulation', 'cladding'];
 const PCT_STAGES = ['materials', 'finishing'];
 
-/* ---------- нормы трудоёмкости ---------- */
-const ELBOW_EQ = 1.5;    // отвод = 1,5 м прямой трубы
+/* ---------- нормы трудоёмкости (EAI rev.2) ---------- */
+const FIT_K = 2;         // средний множитель фитинга (у каждой группы свой, см. DN_GROUPS.fk)
 const BOX_HOURS = 1.5;   // один чемодан
-const HPM_INS = 0.25069;  // ч на 1 м² приведённой площади — вата
-const HPM_CLAD = 0.24995; // то же для металла (чемоданы считаются отдельно)
+const ELBOW_EQ = 1.5;    // осталось для совместимости со старыми вызовами
 
-/** Коэффициент производительности: на тонких трубах м² даются медленнее. */
-function dnK(dn) {
-  const d = +dn || 0;
-  if (d <= 50) return 1.8;
-  if (d <= 150) return 1.25;
-  return 1.0;
+const DN_GROUPS = [
+  { name: 'A', max: 89,  h: 1.99, hf: 3.72, fk: 1.87, k: 1.79, ru: 'тонкие · OD ≤89 (DN15–80)',  en: 'thin · OD ≤89',      et: 'peened · OD ≤89' },
+  { name: 'B', max: 114, h: 1.39, hf: 3.36, fk: 2.42, k: 1.25, ru: 'средние · OD 114 (DN100)',   en: 'medium · OD 114',    et: 'kesk · OD 114' },
+  { name: 'C', max: 168, h: 1.33, hf: 3.00, fk: 2.26, k: 1.20, ru: 'крупные · OD 140–168',       en: 'large · OD 140–168', et: 'suured · OD 140–168' },
+  { name: 'D', max: 1e9, h: 1.11, hf: 2.00, fk: 1.80, k: 1.00, ru: 'толстые · OD ≥219 (DN200+)', en: 'thick · OD ≥219',    et: 'jämedad · OD ≥219' },
+];
+
+const r2 = (x) => Math.round(x * 100) / 100;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const num = (v) => { const n = +v; return isFinite(n) ? n : 0; };
+
+/** Наружный диаметр трубы; если в регистре его нет — прикидываем по DN. */
+function odOf(b) {
+  const od = +(b && b.pipe_od) || 0;
+  if (od > 0) return od;
+  const d = +(b && b.dn) || 0;
+  return d > 0 ? Math.round(d * 1.15) + 10 : 0;
 }
 
-const devM = (b) => (+b.dev || 0) / 1000;
+/** Группа трудоёмкости ветки. */
+function groupOf(b) {
+  const od = odOf(b);
+  return DN_GROUPS.find((g) => od <= g.max) || DN_GROUPS[DN_GROUPS.length - 1];
+}
 
-/** База метров ветки: прямая труба, а если её нет — вся длина ветки (только арматура). */
+/** Коэффициент производительности (1,00 — самые быстрые толстые трубы). */
+function dnK(b) {
+  if (b != null && typeof b === 'object') return groupOf(b).k;
+  return groupOf({ dn: b }).k;
+}
+
+/* ---------- площади ветки ---------- */
+/** Площади из регистра: прямые, отводы, прочие фитинги (тройники, конусы, врезки). */
+function areasOf(b) {
+  const pipe = +(b && b.m2_pipe) || 0;
+  const el = +(b && b.m2_elbow) || 0;
+  const fit = +(b && b.m2_fit) || 0;
+  if (pipe + el + fit > 0) return { pipe, elbow: el, fit };
+  // ветка без построчной разбивки в регистре — раскладываем сами
+  const dev = (+(b && b.dev) || 0) / 1000;
+  const nE = +(b && b.elbows) || 0;
+  const mb = (+(b && b.straight_m) || 0) || (+(b && b.length_m) || 0);
+  const elA = dev > 0 ? dev * 0.5 * nE : 0;          // отвод ≈ 0,5 м развёртки
+  const a = +(b && b.area_m2) || 0;
+  if (a > 0) return { pipe: Math.max(0, a - elA), elbow: elA, fit: 0 };
+  if (dev > 0 && (mb > 0 || nE > 0)) return { pipe: dev * mb, elbow: elA, fit: 0 };
+  return { pipe: 0, elbow: 0, fit: 0 };
+}
+
+/** Приведённая площадь, отслеживаемая метрами (прямые + прочие фитинги). */
+function effPipe(b) { const a = areasOf(b); return a.pipe + groupOf(b).fk * a.fit; }
+/** Приведённая площадь отводов — отслеживается чек-боксами. */
+function effElbow(b) { return groupOf(b).fk * areasOf(b).elbow; }
+/** Вся приведённая площадь ветки, кроме чемоданов. */
+function effArea(b) { return effPipe(b) + effElbow(b); }
+/** Чемодан в м²-эквиваленте этой ветки (1,5 часа). */
+function boxEqA(b) { const h = groupOf(b).h; return h > 0 ? BOX_HOURS / h : 1.35; }
+
+/** База метров ветки: прямая труба, а если её нет — вся длина ветки. */
 function metreBase(b) {
   const st = +b.straight_m || 0;
   if (st > 0) return st;
@@ -60,24 +115,24 @@ function metreBase(b) {
   return len > 0 ? Math.round(len * 10) / 10 : 0;
 }
 
-/** Метровый эквивалент одного чемодана на этой ветке. */
+/** Метровый эквивалент чемодана — для подписей в интерфейсе. */
 function boxEqM(b) {
-  const base = devM(b) * dnK(b.dn) * HPM_CLAD;
-  return base > 0 ? BOX_HOURS / base : 6;
+  const p = effPipe(b), mb = metreBase(b);
+  return mb > 0 && p > 0 ? r2(boxEqA(b) * mb / p) : 6;
 }
 
-/** Объём работ ветки в «метрах трубы»: прямые + отводы (+ чемоданы для металла). */
+/** Объём работ ветки в приведённых м². */
 function unitsOf(b, withBoxes) {
-  const u = metreBase(b) + ELBOW_EQ * (+b.elbows || 0);
-  return withBoxes ? u + boxEqM(b) * (+b.cases || 0) : u;
+  const u = effArea(b);
+  return withBoxes ? u + boxEqA(b) * (+b.cases || 0) : u;
 }
 
 /** Нормо-часы ветки по позициям и всего. */
 function branchHours(b) {
-  const q = devM(b) * dnK(b.dn);
-  const ins = unitsOf(b, false) * q * HPM_INS;
-  const clad = unitsOf(b, false) * q * HPM_CLAD + BOX_HOURS * (+b.cases || 0);
-  const rest = (ins + clad) * (5 + 23 + 2) / (30 + 40);
+  const base = effArea(b) * groupOf(b).h;
+  const ins = base * 30 / 100;
+  const clad = base * 40 / 100 + BOX_HOURS * (+b.cases || 0);
+  const rest = base * 30 / 100;      // материалы 5 + отделка 23 + приёмка 2
   return { ins: r2(ins), clad: r2(clad), rest: r2(rest), total: r2(ins + clad + rest) };
 }
 
@@ -87,16 +142,13 @@ function lineHours(line) {
   return r2(t);
 }
 
-const r2 = (x) => Math.round(x * 100) / 100;
-const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-const num = (v) => { const n = +v; return isFinite(n) ? n : 0; };
-
 /* ---------- ветки ---------- */
 function branches(line) {
   const bs = (line && line.branches) || [];
   if (bs.length) return bs;
   return [{
-    id: 'main', label: 'main', dn: line && line.dn, dev: (line && line.dev) || 0,
+    id: 'main', label: 'main', dn: line && line.dn, pipe_od: line && line.pipe_od,
+    dev: (line && line.dev) || 0, area_m2: (line && line.area_m2) || 0,
     straight_m: (line && line.straight_m) || 0, elbows: (line && line.elbows) || 0,
     cases: (line && line.cases) || 0,
   }];
@@ -162,7 +214,7 @@ function sanitizeBranch(src, b) {
   return c;
 }
 
-/** Приводит присланные отметки к текущей модели. Старый формат (v1) не переносится. */
+/** Приводит присланные отметки к текущей модели. */
 function sanitize(input, line) {
   const out = emptyChecks(line);
   const src = (input && input.branches) || {};
@@ -177,7 +229,7 @@ function branchRelease(checks, branchId) {
   return c ? clamp(num(c.release), 0, 100) : 0;
 }
 
-/** Выдача по линии: средневзвешенно по площади ветки (при нуле — по метрам, иначе поровну). */
+/** Выдача по линии: средневзвешенно по площади ветки. */
 function lineRelease(line, checks) {
   const bs = branches(line);
   if (!bs.length) return 0;
@@ -193,7 +245,7 @@ function lineRelease(line, checks) {
 /* ---------- проценты ---------- */
 function branchStagePercent(checks, branchId, stageKey, line) {
   const b = branches(line).find((x) => x.id === branchId)
-         || { straight_m: 0, elbows: 0, cases: 0, dev: 0, dn: 0 };
+         || { straight_m: 0, elbows: 0, cases: 0, area_m2: 0, dn: 0 };
   const c = (checks && checks.branches && checks.branches[branchId]) || emptyBranchChecks();
 
   if (stageKey === 'materials') return clamp(num(c.materials), 0, 100);
@@ -203,11 +255,14 @@ function branchStagePercent(checks, branchId, stageKey, line) {
     return lv.length ? Math.max(...lv) : 0;
   }
   const withBoxes = stageKey === 'cladding';
-  const total = unitsOf(b, withBoxes);
+  const P = effPipe(b), E = effElbow(b);
+  const nE = +b.elbows || 0, mb = metreBase(b);
+  const total = P + E + (withBoxes ? boxEqA(b) * (+b.cases || 0) : 0);
   if (total <= 0) return 0;
   const s = c[stageKey] || {};
-  let done = clamp(num(s.m), 0, metreBase(b)) + ELBOW_EQ * ((s.el || []).length);
-  if (withBoxes) done += boxEqM(b) * ((s.bx || []).length);
+  let done = (mb > 0 ? clamp(num(s.m), 0, mb) / mb : 0) * P
+           + (nE > 0 ? (s.el || []).length / nE : 0) * E;
+  if (withBoxes) done += boxEqA(b) * ((s.bx || []).length);
   return clamp((done / total) * 100, 0, 100);
 }
 
@@ -232,7 +287,7 @@ function linePercent(line, checks) {
   return p;
 }
 
-/** Освоенные нормо-часы линии (для отчёта и прогноза). */
+/** Освоенные нормо-часы линии. */
 function lineEarnedHours(line, checks) {
   let h = 0;
   for (const b of branches(line)) {
@@ -246,11 +301,33 @@ function lineEarnedHours(line, checks) {
   return r2(h);
 }
 
+/** Нормо-часы «safety insulation» — материалы + вата (35% трудоёмкости). */
+function lineSafetyHours(line) {
+  let h = 0;
+  for (const b of branches(line)) {
+    const bh = branchHours(b);
+    h += bh.ins + bh.rest * (5 / 30);
+  }
+  return r2(h);
+}
+
+function lineSafetyEarned(line, checks) {
+  let h = 0;
+  for (const b of branches(line)) {
+    const bh = branchHours(b);
+    h += bh.ins * branchStagePercent(checks, b.id, 'insulation', line) / 100
+       + bh.rest * (5 / 30) * branchStagePercent(checks, b.id, 'materials', line) / 100;
+  }
+  return r2(h);
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     MODEL_VERSION, STAGES, INSP_LEVELS, QTY_STAGES, PCT_STAGES,
-    ELBOW_EQ, BOX_HOURS, HPM_INS, HPM_CLAD, dnK, boxEqM, unitsOf, metreBase,
+    ELBOW_EQ, FIT_K, BOX_HOURS, DN_GROUPS, dnK, odOf, groupOf,
+    areasOf, effPipe, effElbow, effArea, boxEqA, boxEqM, unitsOf, metreBase,
     branches, branchWeights, branchHours, lineHours, lineEarnedHours,
+    lineSafetyHours, lineSafetyEarned,
     emptyChecks, emptyBranchChecks, sanitize,
     branchStagePercent, branchPercent, stagePercent, linePercent,
     branchRelease, lineRelease,
