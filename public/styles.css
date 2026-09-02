@@ -389,3 +389,22 @@ nav.bot a.on{color:var(--acc)}
 .bar.rel i{background:var(--rel)}
 .bar.rel.ok i{background:var(--rel)}
 .relline:empty{display:none}
+
+/* план выдачи и прогноз «успеваем ли» */
+.card.fs{border-left:4px solid var(--ink3)}
+.card.fs.ok{border-left-color:var(--ok);background:#f2fbf7}
+.card.fs.warn{border-left-color:var(--warn);background:#fffaf0}
+.card.fs.bad{border-left-color:var(--acc);background:#fdeef5}
+.fsv{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-top:6px}
+.card.fs.ok .fsv{color:var(--ok)}
+.card.fs.warn .fsv{color:#8a6100}
+.card.fs.bad .fsv{color:var(--acc)}
+.lgd.c2::before{background:var(--ok)}
+.lgd.r2::before{background:var(--rel)}
+.tbl td.mpcell.ed{cursor:pointer}
+.tbl td.mpcell.ed:hover{background:var(--btn);border-radius:6px}
+.tbl tr.nopkg td{background:#fdeef5}
+input[type=date].pkgdate{border:1px solid var(--line);border-radius:7px;padding:4px 6px;
+  background:var(--card);color:var(--ink);font-size:13px}
+.pkgsel{border:1px solid var(--line);border-radius:7px;padding:3px 6px;background:var(--card);
+  color:var(--ink);font-size:13px;max-width:100%}

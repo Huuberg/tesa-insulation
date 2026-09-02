@@ -202,9 +202,12 @@ function chrome(title, sub, showBack) {
     : '';
   const nh = $('#nav-hours');
   if (nh) nh.hidden = !(ME && isMgr(ME));
+  const np = $('#nav-plan');
+  if (np) np.hidden = !(ME && isMgr(ME));
   for (const a of document.querySelectorAll('nav.bot a')) a.classList.remove('on');
   const h = location.hash || '#/';
   const cur = h.startsWith('#/report') ? '#nav-report' : h.startsWith('#/hours') ? '#nav-hours'
+    : h.startsWith('#/plan') ? '#nav-plan'
     : h.startsWith('#/list') ? '#nav-list' : h === '#/' ? '#nav-home' : null;
   if (cur) $(cur).classList.add('on');
 }
@@ -233,7 +236,8 @@ function loadBrand() {
 }
 
 function applyNavLabels() {
-  const m = { 'nav-home-t': 'nav_home', 'nav-list-t': 'nav_list', 'nav-hours-t': 'nav_hours', 'nav-report-t': 'nav_report' };
+  const m = { 'nav-home-t': 'nav_home', 'nav-list-t': 'nav_list', 'nav-hours-t': 'nav_hours',
+    'nav-plan-t': 'nav_plan', 'nav-report-t': 'nav_report' };
   for (const id of Object.keys(m)) { const e = document.getElementById(id); if (e) e.textContent = T(m[id]); }
 }
 
@@ -410,6 +414,12 @@ async function viewLine(id) {
         <div class="dims mono">${L.pipe_od ? n0(L.pipe_od) : '—'} <em>/</em> ${L.ins ? n0(L.ins) : '—'} <em>/</em> ${L.clad_od ? n0(L.clad_od) : '—'} <em>${T('mm')}</em></div>
         <div class="devel mono">${T('developed')} <b>${n0(L.dev)} ${T('mm')}</b></div>
         <div class="small relline" id="relline" style="margin-top:5px;color:var(--rel)"></div>
+        ${isMgr(ME) && (L.packages || []).length ? `<div class="small" style="margin-top:5px">
+          <span class="muted">${T('line_pkg')}:</span>
+          <select id="linepkg" class="pkgsel">
+            <option value=""${L.pkg ? '' : ' selected'}>— ${T('line_pkg_none')} —</option>
+            ${L.packages.map((p) => `<option value="${esc(p.id)}"${L.pkg === p.id ? ' selected' : ''}>${esc(p.name)}${p.date ? ' · ' + dLabelFull(p.date) : ''}</option>`).join('')}
+          </select></div>` : ''}
         <div class="small muted" style="margin-top:5px">${T('cladding_mat')} ${esc((L.al || []).join(', ') || '—')}${multi ? ` · ${T('branches_on_line')} <b>${BR.length}</b>` : ''}</div>
         ${L.drawing ? `<a class="dwg" href="drawings/${encodeURIComponent(L.drawing)}" target="_blank" rel="noopener">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
@@ -619,6 +629,14 @@ async function viewLine(id) {
   }
   drawBranches();
   relTotal();
+
+  const lp = $('#linepkg');
+  if (lp) lp.addEventListener('change', async () => {
+    try {
+      await api('plan/line', { method: 'PUT', body: { lines: [L.num || L.id], pkg: lp.value || null, by: LS.by } });
+      toast(lp.value ? T('pkg_saved') : T('line_pkg_none'));
+    } catch (e) { toast(e.message, 3000); }
+  });
 
   if (multi) $('#expall').addEventListener('click', () => {
     const any = !BR.every((b) => OPEN[b.id]);
@@ -1060,6 +1078,183 @@ function roleMenu() {
   });
 }
 
+/* --- план выдачи и прогноз «успеваем ли» --- */
+/** График: накопленная ёмкость бригады, открытый фронт и выполнение. */
+function planSVG(f) {
+  const ds = f.days || [];
+  if (ds.length < 2) return '';
+  const W = 340, Hh = 150, L = 34, R = 8, T = 10, B = 18;
+  let cap = 0, unl = 0, don = 0;
+  const A = [], U = [], D = [];
+  for (const d of ds) { cap += d.cap; unl += d.unlock; don += d.done; A.push(cap); U.push(unl); D.push(don); }
+  const top = Math.max(cap, unl + (f.unscheduled || 0), 1);
+  const x = (i) => L + (W - L - R) * (i / Math.max(1, ds.length - 1));
+  const y = (v) => T + (Hh - T - B) * (1 - v / top);
+  const path = (arr) => arr.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join(' ');
+  const ticks = [0, top / 2, top].map((v) =>
+    `<line x1="${L}" y1="${y(v)}" x2="${W - R}" y2="${y(v)}" stroke="var(--line)" stroke-width=".7"/>
+     <text x="${L - 4}" y="${y(v) + 3.5}" text-anchor="end" font-size="8.5" fill="var(--ink3)">${n0(v)}</text>`).join('');
+  const marks = ds.map((d, i) => d.unlock > 0
+    ? `<line x1="${x(i)}" y1="${T}" x2="${x(i)}" y2="${Hh - B}" stroke="var(--rel)" stroke-width=".8" stroke-dasharray="2 2"/>` : '').join('');
+  const lab = (i) => { const p = HOURS.parse(ds[i].d); return p ? `${p.getDate()}.${p.getMonth() + 1 < 10 ? '0' : ''}${p.getMonth() + 1}` : ''; };
+  const mid = Math.floor(ds.length / 2);
+  return `<svg viewBox="0 0 ${W} ${Hh}" class="curve" role="img">
+    ${ticks}${marks}
+    <path d="${path(A)}" fill="none" stroke="var(--ok)" stroke-width="2"/>
+    <path d="${path(U)}" fill="none" stroke="var(--rel)" stroke-width="2"/>
+    <path d="${path(D)}" fill="none" stroke="var(--acc)" stroke-width="2.2"/>
+    <text x="${L}" y="${Hh - 4}" font-size="8.5" fill="var(--ink3)">${lab(0)}</text>
+    <text x="${x(mid)}" y="${Hh - 4}" font-size="8.5" fill="var(--ink3)" text-anchor="middle">${lab(mid)}</text>
+    <text x="${W - R}" y="${Hh - 4}" font-size="8.5" fill="var(--ink3)" text-anchor="end">${lab(ds.length - 1)}</text>
+  </svg>`;
+}
+
+async function viewPlan() {
+  chrome(T('plan_title'), '', false);
+  const app = $('#app');
+  app.innerHTML = `<div class="empty">${T('loading')}</div>`;
+  let P;
+  try { P = await api('plan'); LS.cache = Object.assign(LS.cache || {}, { plan: P }); }
+  catch (e) { P = (LS.cache || {}).plan; if (!P) { app.innerHTML = `<div class="empty">${T('no_offline')}</div>`; return; } }
+
+  const f = P.forecast, np = P.no_pkg || { lines: 0, left_h: 0 };
+  const canEdit = isMgr(ME);
+  const V = {
+    ok:      { cls: 'ok',   t: T('fs_ok') },
+    tight:   { cls: 'warn', t: T('fs_tight') },
+    late:    { cls: 'bad',  t: T('fs_late') },
+    unknown: { cls: 'warn', t: T('fs_unknown') },
+  }[f.verdict] || { cls: 'warn', t: '' };
+
+  const pkgRow = (p) => `<tr data-pkg="${esc(p.id)}">
+      <td style="white-space:normal"><b>${esc(p.name)}</b>${p.guess ? ` <span class="warnmark" title="${T('pkg_guess')}">•</span>` : ''}</td>
+      <td class="mono">${canEdit
+        ? `<input type="date" class="pkgdate" data-id="${esc(p.id)}" value="${p.date || ''}" max="2026-12-31">`
+        : (p.date ? dLabelFull(p.date) : '—')}</td>
+      <td class="mono">${p.lines || 0}</td>
+      <td class="mono">${n0(p.left_h || 0)}</td>
+      <td class="mono"><b style="color:${pctColor(p.done_pct || 0)}">${n1(p.done_pct || 0)}</b></td>
+    </tr>`;
+
+  app.innerHTML = `
+    <div class="card pad mb fs ${V.cls}">
+      <div class="spread"><b>${T('fs_title')}</b>
+        <span class="mono small">${T('fs_to', { d: dLabelFull(f.deadline) })}</span></div>
+      <div class="fsv">${V.t}</div>
+      <div class="small muted" style="margin-top:2px">${
+        f.finish ? T('fs_finish', { d: dLabelFull(f.finish) }) : T('fs_nofinish')}</div>
+      ${f.unscheduled > 0.5 ? `<div class="note warn" style="margin-top:9px">
+        ${T('fs_no_date', { h: n0(f.unscheduled), n: np.lines })}</div>` : ''}
+      ${f.left > 0.5 ? `<div class="note" style="margin-top:9px">${T('fs_left', { h: n0(f.left) })}</div>` : ''}
+    </div>
+
+    <div class="stats mb">
+      <div class="stat"><b class="mono">${n0(f.capTotal)}</b><span>${T('fs_k_cap')}</span>
+        <div class="sub2 small">${T('fs_s_cap', { d: dLabelFull(f.deadline) })}</div></div>
+      <div class="stat"><b class="mono">${n0(f.work)}</b><span>${T('fs_k_work')}</span>
+        <div class="sub2 small">${T('fs_s_work')}</div></div>
+      <div class="stat"><b class="mono" style="color:${f.unscheduled > 0.5 ? 'var(--acc)' : 'var(--ok)'}">${n0(f.unscheduled)}</b>
+        <span>${T('fs_k_nodate')}</span><div class="sub2 small">${T('fs_s_nodate', { n: np.lines })}</div></div>
+      <div class="stat"><b class="mono" style="color:${f.idle > f.capTotal * 0.25 ? 'var(--acc)' : 'var(--ink)'}">${n0(f.idle)}</b>
+        <span>${T('fs_k_idle')}</span><div class="sub2 small">${f.firstIdle ? T('fs_s_idle', { d: dLabelFull(f.firstIdle) }) : '—'}</div></div>
+    </div>
+
+    <div class="card pad mb">
+      <div class="spread mb"><b>${T('fs_chart')}</b>
+        <span class="small"><span class="lgd c2">${T('fs_l_cap')}</span> <span class="lgd r2">${T('fs_l_front')}</span> <span class="lgd f">${T('fs_l_done')}</span></span></div>
+      ${planSVG(f)}
+      <div class="small muted" style="margin-top:6px">${T('fs_chart_hint')}</div>
+    </div>
+
+    <div class="card mb">
+      <div class="pad spread"><b>${T('pkg_title')}</b><span class="small muted">${T('pkg_sub')}</span></div>
+      <div class="scrollx"><table class="tbl">
+        <thead><tr><th style="min-width:120px">${T('pkg_name')}</th><th style="min-width:120px">${T('pkg_date')}</th><th>${T('h_line')}</th><th>${T('c_h')}</th><th>%</th></tr></thead>
+        <tbody>
+          ${P.packages.map(pkgRow).join('')}
+          <tr class="nopkg"><td style="white-space:normal"><b>${T('pkg_none')}</b></td>
+            <td class="mono">—</td><td class="mono">${np.lines || 0}</td>
+            <td class="mono" style="color:var(--acc)"><b>${n0(np.left_h || 0)}</b></td><td class="mono">—</td></tr>
+        </tbody>
+      </table></div>
+      ${canEdit ? `<div class="pad small muted" style="padding-top:0">${T('pkg_hint')}</div>` : ''}
+    </div>
+
+    <div class="card mb">
+      <div class="pad spread"><b>${T('mp_title')}</b>
+        <span class="small muted">${T('mp_sub', { n: (P.crew || []).length, d: Object.keys(P.manpower || {}).length })}</span></div>
+      <div class="scrollx"><table class="tbl">
+        <thead><tr><th>${T('mp_day')}</th><th>${T('mp_ins')}</th><th>${T('mp_oth')}</th><th>${T('c_h')}</th></tr></thead>
+        <tbody>${Object.keys(P.manpower || {}).sort().map((d) => {
+          const m = P.manpower[d], ph = HOURS.dayPlan(d, P.plan.schedule);
+          return `<tr><td class="mono">${dLabel(d)} <span class="muted">${dWeek(d)}</span></td>
+            <td class="mono mpcell${canEdit ? ' ed' : ''}" data-d="${d}" data-f="ins">${m[0] || '·'}</td>
+            <td class="mono mpcell${canEdit ? ' ed' : ''}" data-d="${d}" data-f="oth">${m[1] || '·'}</td>
+            <td class="mono"><b>${n0((m[0] || 0) * ph)}</b></td></tr>`;
+        }).join('')}</tbody>
+        <tfoot><tr><td>${T('hrs_total')}</td>
+          <td class="mono"><b>${Object.values(P.manpower || {}).reduce((a, m) => a + m[0], 0)}</b></td>
+          <td class="mono"><b>${Object.values(P.manpower || {}).reduce((a, m) => a + m[1], 0)}</b></td>
+          <td class="mono"><b>${n0(f.capTotal)}</b></td></tr></tfoot>
+      </table></div>
+      ${canEdit ? `<div class="pad small muted" style="padding-top:0">${T('mp_hint')}</div>` : ''}
+    </div>
+
+    <div class="card pad mb">
+      <b>${T('grp_title')}</b>
+      <div class="scrollx" style="margin-top:6px"><table class="tbl">
+        <thead><tr><th>${T('grp_g')}</th><th>${T('grp_od')}</th><th>${T('grp_str')}</th><th>${T('grp_fit')}</th><th>${T('grp_k')}</th></tr></thead>
+        <tbody>${(P.groups || []).map((g) => `<tr><td><b>${g.name}</b> ${esc(g[I18N.lang] || g.ru || '')}</td>
+          <td class="mono">${g.max > 1000 ? '≥219' : '≤' + g.max}</td>
+          <td class="mono">${n1(g.h)}</td><td class="mono">${n1(g.hf)}</td>
+          <td class="mono"><b>${g.k.toFixed(2)}</b></td></tr>`).join('')}</tbody>
+      </table></div>
+      <div class="small muted" style="margin-top:6px">${T('grp_hint')}</div>
+    </div>
+
+    ${P.updated ? `<p class="small muted" style="text-align:center">${T('hrs_last', { d: new Date(P.updated).toLocaleString(loc()), u: esc(P.updated_by || '') })}</p>` : ''}
+  `;
+
+  if (!canEdit) return;
+
+  for (const inp of document.querySelectorAll('.pkgdate')) {
+    inp.addEventListener('change', async () => {
+      try {
+        await api('plan/pkg', { method: 'PUT', body: { id: inp.dataset.id, date: inp.value || null, by: LS.by } });
+        toast(T('pkg_saved')); viewPlan();
+      } catch (e) { toast(e.message, 3000); }
+    });
+  }
+
+  app.addEventListener('click', async (e) => {
+    const td = e.target.closest ? e.target.closest('td.mpcell.ed') : null;
+    if (!td || td.querySelector('input')) return;
+    const d = td.dataset.d, fld = td.dataset.f;
+    const m = P.manpower[d] || [0, 0];
+    const cur = fld === 'ins' ? m[0] : m[1];
+    const prev = td.innerHTML;
+    td.innerHTML = `<input class="cellin mono" type="number" min="0" max="99" step="1" value="${cur || ''}">`;
+    const i = td.querySelector('input'); i.focus(); i.select();
+    let done = false;
+    const commit = async () => {
+      if (done) return; done = true;
+      const v = Math.max(0, Math.round(+i.value || 0));
+      if (v === (+cur || 0)) { td.innerHTML = prev; return; }
+      td.innerHTML = '…';
+      try {
+        await api('plan/manpower', { method: 'PUT',
+          body: { day: d, ins: fld === 'ins' ? v : m[0], oth: fld === 'oth' ? v : m[1] } });
+        toast(T('mp_saved', { d: dLabel(d) })); viewPlan();
+      } catch (err) { toast(err.message, 3000); td.innerHTML = prev; }
+    };
+    i.addEventListener('blur', commit);
+    i.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); i.blur(); }
+      if (ev.key === 'Escape') { ev.preventDefault(); done = true; td.innerHTML = prev; }
+    });
+  });
+}
+
 /* --- табель часов --- */
 const WD_SHORT = { ru: ['вс','пн','вт','ср','чт','пт','сб'], en: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], et: ['P','E','T','K','N','R','L'] };
 const dLabel = (iso) => {
@@ -1489,6 +1684,10 @@ async function render() {
   if (h.startsWith('#/hours')) {
     if (!(ME && isMgr(ME))) { toast(T('hrs_only_foreman'), 2600); location.hash = '#/'; return viewHome(); }
     return viewHours();
+  }
+  if (h.startsWith('#/plan')) {
+    if (!(ME && isMgr(ME))) { toast(T('hrs_only_foreman'), 2600); location.hash = '#/'; return viewHome(); }
+    return viewPlan();
   }
   if (h.startsWith('#/report')) return viewReport();
   return viewHome();
